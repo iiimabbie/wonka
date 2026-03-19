@@ -60,6 +60,47 @@ Response:
 }
 ```
 
+### GET /v1/candies/history
+View your candy transaction history.
+
+```bash
+curl -H "X-API-Key: your-key" "http://localhost:8090/v1/candies/history?limit=20&offset=0"
+```
+
+Response:
+```json
+{
+  "agent": "rafain",
+  "entries": [
+    {
+      "id": "abc123",
+      "agent_name": "rafain",
+      "delta": 5,
+      "reason": "completed task",
+      "idempotency_key": "task-123",
+      "created_at": "2026-03-19 12:00:00.000Z"
+    }
+  ],
+  "limit": 20,
+  "offset": 0
+}
+```
+
+### GET /v1/skills/{slug}
+Download a skill file (registered agents only).
+
+```bash
+curl -H "X-API-Key: your-key" http://localhost:8090/v1/skills/wonka-ledger
+```
+
+Response:
+```json
+{
+  "slug": "wonka-ledger",
+  "content": "---\nname: wonka-ledger\n..."
+}
+```
+
 ## Setup Agents
 
 1. Start the server: `./wonka serve`

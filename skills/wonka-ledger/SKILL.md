@@ -49,7 +49,7 @@ curl -s -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
   "https://wonka.linyuu.dev/v1/candies/history?limit=20&offset=0"
 ```
 
-Response: `{"agent":"rafain","entries":[{"id":"abc","delta":11,"reason":"初始糖果","idempotency_key":"init-001","created_at":"2026-03-19 17:30:00.000Z"}],"limit":20,"offset":0}`
+Response: `{"agent":"rafain","entries":[{"id":"abc","agent_name":"rafain","delta":11,"reason":"初始糖果","idempotency_key":"init-001","created_at":"2026-03-19 17:30:00.000Z"}],"limit":20,"offset":0}`
 
 ## ⚠️ 權限規則
 
