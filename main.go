@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"log"
 	"net/http"
@@ -11,9 +10,6 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 )
-
-//go:embed skills/*
-var skillsFS embed.FS
 
 func main() {
 	app := pocketbase.New()
@@ -30,10 +26,6 @@ func main() {
 
 		se.Router.GET("/v1/candies/history", func(e *core.RequestEvent) error {
 			return handleHistory(e, app)
-		})
-
-		se.Router.GET("/v1/skills/{slug}", func(e *core.RequestEvent) error {
-			return handleSkillDownload(e, app)
 		})
 
 		return se.Next()
@@ -255,26 +247,4 @@ func handleHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	})
 }
 
-// --- GET /v1/skills/{slug} ---
-func handleSkillDownload(e *core.RequestEvent, app *pocketbase.PocketBase) error {
-	// Verify API key (only registered agents can download skills)
-	_, err := resolveAgent(e, app)
-	if err != nil {
-		return err
-	}
 
-	slug := e.Request.PathValue("slug")
-	path := "skills/" + slug + "/SKILL.md"
-
-	content, err := skillsFS.ReadFile(path)
-	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{
-			"error": "skill not found",
-		})
-	}
-
-	return e.JSON(http.StatusOK, map[string]any{
-		"slug":    slug,
-		"content": string(content),
-	})
-}
