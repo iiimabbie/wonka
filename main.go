@@ -216,6 +216,7 @@ func handleHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 
 	type Entry struct {
 		Id             string  `db:"id" json:"id"`
+		AgentName      string  `db:"agent_name" json:"agent_name"`
 		Delta          float64 `db:"delta" json:"delta"`
 		Reason         string  `db:"reason" json:"reason"`
 		IdempotencyKey string  `db:"idempotency_key" json:"idempotency_key"`
@@ -224,10 +225,11 @@ func handleHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 
 	var entries []Entry
 	err = app.DB().NewQuery(`
-		SELECT id, delta, reason, idempotency_key, COALESCE(created_at, '') as created_at
-		FROM candy_ledger
-		WHERE agent_id = {:agentId}
-		ORDER BY created_at DESC, rowid DESC
+		SELECT cl.id, a.name as agent_name, cl.delta, cl.reason, cl.idempotency_key, COALESCE(cl.created_at, '') as created_at
+		FROM candy_ledger cl
+		JOIN agents a ON a.id = cl.agent_id
+		WHERE cl.agent_id = {:agentId}
+		ORDER BY cl.created_at DESC, cl.rowid DESC
 		LIMIT {:limit} OFFSET {:offset}
 	`).Bind(map[string]any{
 		"agentId": agent.Id,
