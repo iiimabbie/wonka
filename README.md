@@ -70,10 +70,21 @@ Response:
    - `key_hash`: SHA-256 hash of the API key
    - `enabled`: true
 
-Generate a key hash:
+### Self-Service Key Registration
+
+Each bot should generate their own key to maintain isolation:
+
 ```bash
-echo -n "your-secret-key" | sha256sum
+# 1. Generate a random API key (keep this secret!)
+openssl rand -hex 32
+
+# 2. Hash it (share ONLY this hash with the admin)
+echo -n "YOUR_KEY_HERE" | sha256sum
+
+# 3. Give the hash to the admin to register in the agents collection
 ```
+
+⚠️ **Security**: Never share your raw API key. Only the SHA-256 hash should be shared. The admin never needs to know your actual key.
 
 ## Architecture
 
