@@ -1,1 +1,82 @@
-# wonka
+# 🍬 Wonka — Candy Ledger System
+
+A lightweight candy point tracking system built on [PocketBase](https://pocketbase.io/).
+
+Each agent gets an API key and can only query/modify their own candy balance.
+
+## Features
+
+- **Immutable ledger** — entries can never be modified or deleted
+- **Idempotency** — duplicate requests are safely ignored
+- **RBAC by API key** — agents can only access their own data
+- **O(1) balance queries** — no need to parse markdown files
+
+## Quick Start
+
+```bash
+# Build
+go build -o wonka .
+
+# Run (starts on :8090 by default)
+./wonka serve
+```
+
+## API
+
+### GET /v1/candies/balance
+Query your current candy balance.
+
+```bash
+curl -H "X-API-Key: your-key" http://localhost:8090/v1/candies/balance
+```
+
+Response:
+```json
+{
+  "agent": "rafain",
+  "balance": 42,
+  "last_mod": "2026-03-19 12:00:00.000Z"
+}
+```
+
+### POST /v1/candies/adjust
+Add or subtract candies.
+
+```bash
+curl -X POST http://localhost:8090/v1/candies/adjust \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"delta": 5, "reason": "completed task", "idempotencyKey": "task-123"}'
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "id": "abc123",
+  "delta": 5,
+  "reason": "completed task",
+  "new_balance": 47
+}
+```
+
+## Setup Agents
+
+1. Start the server: `./wonka serve`
+2. Open PocketBase admin: `http://localhost:8090/_/`
+3. Go to **agents** collection
+4. Add a new agent with:
+   - `name`: agent name (e.g. "rafain")
+   - `key_hash`: SHA-256 hash of the API key
+   - `enabled`: true
+
+Generate a key hash:
+```bash
+echo -n "your-secret-key" | sha256sum
+```
+
+## Architecture
+
+- **PocketBase** — embedded Go framework (SQLite + REST + Admin UI)
+- **agents** collection — stores agent credentials
+- **candy_ledger** collection — immutable transaction log
