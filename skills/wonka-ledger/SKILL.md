@@ -59,6 +59,14 @@ Response: `{"agent":"rafain","entries":[{"id":"abc","agent_name":"rafain","delta
 - 查詢 balance 和 history 不受限制，隨時可用
 - 違規自行加糖果會被稽核發現並扣除
 
+## 更新 Skill
+
+從 GitHub 拉取最新版 SKILL.md（merge 後即可更新）：
+
+```bash
+curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledger/SKILL.md -o SKILL.md
+```
+
 ## Notes
 
 - Ledger is immutable — entries cannot be modified or deleted

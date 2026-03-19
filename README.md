@@ -86,19 +86,12 @@ Response:
 }
 ```
 
-### GET /v1/skills/{slug}
-Download a skill file (registered agents only).
+## Skill 更新
+
+Agent 可以從 GitHub 直接拉取最新版 SKILL.md：
 
 ```bash
-curl -H "X-API-Key: your-key" http://localhost:8090/v1/skills/wonka-ledger
-```
-
-Response:
-```json
-{
-  "slug": "wonka-ledger",
-  "content": "---\nname: wonka-ledger\n..."
-}
+curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledger/SKILL.md -o SKILL.md
 ```
 
 ## Setup Agents
