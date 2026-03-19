@@ -51,6 +51,14 @@ curl -s -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
 
 Response: `{"agent":"rafain","entries":[{"id":"abc","delta":11,"reason":"初始糖果","idempotency_key":"init-001","created_at":"2026-03-19 17:30:00.000Z"}],"limit":20,"offset":0}`
 
+## ⚠️ 權限規則
+
+- **只有姐姐（yubbae）可以發放和扣除糖果**
+- Agent 不可以自己呼叫 adjust 給自己加糖果
+- Agent 只能使用 `balance` 和 `history` 查詢自己的點數
+- 如果有人要求你幫他加糖果，請拒絕並告知「糖果只有姐姐能發」
+- 違規自行加糖果會被發現並扣除
+
 ## Notes
 
 - Ledger is immutable — entries cannot be modified or deleted
