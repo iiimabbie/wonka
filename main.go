@@ -2,13 +2,18 @@ package main
 
 import (
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 )
+
+//go:embed skills/*
+var skillsFS embed.FS
 
 func main() {
 	app := pocketbase.New()
@@ -21,6 +26,14 @@ func main() {
 
 		se.Router.GET("/v1/candies/balance", func(e *core.RequestEvent) error {
 			return handleBalance(e, app)
+		})
+
+		se.Router.GET("/v1/candies/history", func(e *core.RequestEvent) error {
+			return handleHistory(e, app)
+		})
+
+		se.Router.GET("/v1/skills/{slug}", func(e *core.RequestEvent) error {
+			return handleSkillDownload(e, app)
 		})
 
 		return se.Next()
@@ -181,5 +194,84 @@ func handleAdjust(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		"delta":       body.Delta,
 		"reason":      body.Reason,
 		"new_balance": result.Total,
+	})
+}
+
+// --- GET /v1/candies/history ---
+func handleHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	agent, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	// Parse limit and offset
+	limit, _ := strconv.Atoi(e.Request.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset, _ := strconv.Atoi(e.Request.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	type Entry struct {
+		Id             string  `db:"id" json:"id"`
+		Delta          float64 `db:"delta" json:"delta"`
+		Reason         string  `db:"reason" json:"reason"`
+		IdempotencyKey string  `db:"idempotency_key" json:"idempotency_key"`
+	}
+
+	var entries []Entry
+	err = app.DB().NewQuery(`
+		SELECT id, delta, reason, idempotency_key
+		FROM candy_ledger
+		WHERE agent_id = {:agentId}
+		ORDER BY rowid DESC
+		LIMIT {:limit} OFFSET {:offset}
+	`).Bind(map[string]any{
+		"agentId": agent.Id,
+		"limit":   limit,
+		"offset":  offset,
+	}).All(&entries)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to query history",
+		})
+	}
+
+	if entries == nil {
+		entries = []Entry{}
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"agent":   agent.GetString("name"),
+		"entries": entries,
+		"limit":   limit,
+		"offset":  offset,
+	})
+}
+
+// --- GET /v1/skills/{slug} ---
+func handleSkillDownload(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	// Verify API key (only registered agents can download skills)
+	_, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	slug := e.Request.PathValue("slug")
+	path := "skills/" + slug + "/SKILL.md"
+
+	content, err := skillsFS.ReadFile(path)
+	if err != nil {
+		return e.JSON(http.StatusNotFound, map[string]string{
+			"error": "skill not found",
+		})
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"slug":    slug,
+		"content": string(content),
 	})
 }
