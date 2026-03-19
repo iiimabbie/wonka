@@ -4,6 +4,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
+COPY skills/ ./skills/
 RUN CGO_ENABLED=0 go build -o wonka .
 
 FROM alpine:3.21

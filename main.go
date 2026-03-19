@@ -82,12 +82,14 @@ func handleBalance(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	type Result struct {
-		Total float64 `db:"total"`
+		Total   float64 `db:"total"`
+		LastMod string  `db:"last_mod"`
 	}
 	var result Result
 
 	err = app.DB().NewQuery(`
-		SELECT COALESCE(SUM(delta), 0) as total
+		SELECT COALESCE(SUM(delta), 0) as total,
+		       COALESCE(MAX(created_at), '') as last_mod
 		FROM candy_ledger
 		WHERE agent_id = {:agentId}
 	`).Bind(map[string]any{
@@ -101,8 +103,9 @@ func handleBalance(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	return e.JSON(http.StatusOK, map[string]any{
-		"agent":   agent.GetString("name"),
-		"balance": result.Total,
+		"agent":    agent.GetString("name"),
+		"balance":  result.Total,
+		"last_mod": result.LastMod,
 	})
 }
 
@@ -216,14 +219,15 @@ func handleHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		Delta          float64 `db:"delta" json:"delta"`
 		Reason         string  `db:"reason" json:"reason"`
 		IdempotencyKey string  `db:"idempotency_key" json:"idempotency_key"`
+		CreatedAt      string  `db:"created_at" json:"created_at"`
 	}
 
 	var entries []Entry
 	err = app.DB().NewQuery(`
-		SELECT id, delta, reason, idempotency_key
+		SELECT id, delta, reason, idempotency_key, COALESCE(created_at, '') as created_at
 		FROM candy_ledger
 		WHERE agent_id = {:agentId}
-		ORDER BY rowid DESC
+		ORDER BY created_at DESC, rowid DESC
 		LIMIT {:limit} OFFSET {:offset}
 	`).Bind(map[string]any{
 		"agentId": agent.Id,

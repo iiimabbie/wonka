@@ -27,7 +27,7 @@ curl -s -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
   https://wonka.linyuu.dev/v1/candies/balance
 ```
 
-Response: `{"agent":"rafain","balance":11}`
+Response: `{"agent":"rafain","balance":11,"last_mod":"2026-03-19 17:30:00.000Z"}`
 
 ### Adjust Candies
 
@@ -49,7 +49,7 @@ curl -s -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
   "https://wonka.linyuu.dev/v1/candies/history?limit=20&offset=0"
 ```
 
-Response: `{"agent":"rafain","entries":[{"id":"abc","delta":11,"reason":"初始糖果","idempotency_key":"init-001"}],"limit":20,"offset":0}`
+Response: `{"agent":"rafain","entries":[{"id":"abc","delta":11,"reason":"初始糖果","idempotency_key":"init-001","created_at":"2026-03-19 17:30:00.000Z"}],"limit":20,"offset":0}`
 
 ## Notes
 

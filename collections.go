@@ -33,6 +33,7 @@ func ensureCollections(app *pocketbase.PocketBase) {
 			&core.NumberField{Name: "delta", Required: true},
 			&core.TextField{Name: "reason", Required: true},
 			&core.TextField{Name: "idempotency_key", Required: true},
+			&core.AutodateField{Name: "created_at", OnCreate: true},
 		)
 		collection.AddIndex("idx_ledger_agent", false, "agent_id", "")
 		collection.AddIndex("idx_ledger_idempotency", true, "agent_id, idempotency_key", "")
@@ -42,5 +43,32 @@ func ensureCollections(app *pocketbase.PocketBase) {
 		} else {
 			log.Println("✅ Created 'candy_ledger' collection")
 		}
+	} else {
+		// Migrate: add created_at if missing
+		migrateAddCreatedAt(app)
+	}
+}
+
+func migrateAddCreatedAt(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("candy_ledger")
+	if err != nil {
+		return
+	}
+
+	// Check if created_at field already exists
+	for _, f := range collection.Fields {
+		if f.GetName() == "created_at" {
+			return
+		}
+	}
+
+	collection.Fields.Add(
+		&core.AutodateField{Name: "created_at", OnCreate: true},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add created_at to candy_ledger: %v", err)
+	} else {
+		log.Println("✅ Migrated candy_ledger: added created_at field")
 	}
 }
