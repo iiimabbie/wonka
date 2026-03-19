@@ -1,0 +1,11 @@
+services:
+  wonka:
+    build: .
+    container_name: wonka
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./pb_data:/app/pb_data
+    environment:
+      - TZ=Asia/Taipei
