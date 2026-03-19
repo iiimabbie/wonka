@@ -82,14 +82,12 @@ func handleBalance(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	type Result struct {
-		Total   float64 `db:"total"`
-		LastMod string  `db:"last_mod"`
+		Total float64 `db:"total"`
 	}
 	var result Result
 
 	err = app.DB().NewQuery(`
-		SELECT COALESCE(SUM(delta), 0) as total,
-		       COALESCE(MAX(created), '') as last_mod
+		SELECT COALESCE(SUM(delta), 0) as total
 		FROM candy_ledger
 		WHERE agent_id = {:agentId}
 	`).Bind(map[string]any{
@@ -103,9 +101,8 @@ func handleBalance(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	return e.JSON(http.StatusOK, map[string]any{
-		"agent":    agent.GetString("name"),
-		"balance":  result.Total,
-		"last_mod": result.LastMod,
+		"agent":   agent.GetString("name"),
+		"balance": result.Total,
 	})
 }
 
