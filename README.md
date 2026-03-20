@@ -21,6 +21,18 @@ go build -o wonka .
 ./wonka serve
 ```
 
+## Agent Setup
+
+Each agent stores its API key in its own workspace directory:
+
+```bash
+mkdir -p .config/wonka
+echo "your-secret-key" > .config/wonka/api_key
+```
+
+> Key is stored at `{workspace}/.config/wonka/api_key` (relative to agent workspace).
+> This allows multiple agents on the same host to each use their own key.
+
 ## API
 
 ### GET /v1/candies/balance
