@@ -7,14 +7,17 @@ description: Candy ledger API for tracking agent candy points. Use when querying
 
 ## Setup
 
-Store your API key:
+Store your API key in your **workspace directory** (so it travels with the agent):
 
 ```bash
-mkdir -p ~/.config/wonka
-echo "your-secret-key" > ~/.config/wonka/api_key
+mkdir -p .config/wonka
+echo "your-secret-key" > .config/wonka/api_key
 ```
 
 Base URL: `https://wonka.linyuu.dev`
+
+> Key path: `{workspace}/.config/wonka/api_key` (relative to current working directory)
+> This ensures each agent uses its own key even when multiple agents share the same host.
 
 ## API
 
@@ -23,7 +26,7 @@ All requests require `X-API-Key` header.
 ### Query Balance
 
 ```bash
-curl -s -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
   https://wonka.linyuu.dev/v1/candies/balance
 ```
 
@@ -33,7 +36,7 @@ Response: `{"agent":"rafain","balance":11,"last_mod":"2026-03-19 17:30:00.000Z"}
 
 ```bash
 curl -s -X POST https://wonka.linyuu.dev/v1/candies/adjust \
-  -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
+  -H "X-API-Key: $(cat .config/wonka/api_key)" \
   -H "Content-Type: application/json" \
   -d '{"delta": 5, "reason": "completed task", "idempotencyKey": "unique-key-123"}'
 ```
@@ -45,7 +48,7 @@ curl -s -X POST https://wonka.linyuu.dev/v1/candies/adjust \
 ### View History
 
 ```bash
-curl -s -H "X-API-Key: $(cat ~/.config/wonka/api_key)" \
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
   "https://wonka.linyuu.dev/v1/candies/history?limit=20&offset=0"
 ```
 
