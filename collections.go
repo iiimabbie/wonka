@@ -44,9 +44,13 @@ func ensureCollections(app *pocketbase.PocketBase) {
 			log.Println("✅ Created 'candy_ledger' collection")
 		}
 	} else {
-		// Migrate: add created_at if missing
+		// Migrations
 		migrateAddCreatedAt(app)
+		migrateAddAgentRelation(app)
 	}
+
+	// --- agent_balances view ---
+	ensureAgentBalancesView(app)
 }
 
 func migrateAddCreatedAt(app *pocketbase.PocketBase) {
@@ -55,7 +59,6 @@ func migrateAddCreatedAt(app *pocketbase.PocketBase) {
 		return
 	}
 
-	// Check if created_at field already exists
 	for _, f := range collection.Fields {
 		if f.GetName() == "created_at" {
 			return
@@ -70,5 +73,71 @@ func migrateAddCreatedAt(app *pocketbase.PocketBase) {
 		log.Printf("Warning: failed to add created_at to candy_ledger: %v", err)
 	} else {
 		log.Println("✅ Migrated candy_ledger: added created_at field")
+	}
+}
+
+func migrateAddAgentRelation(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("candy_ledger")
+	if err != nil {
+		return
+	}
+
+	// Check if agent relation field already exists
+	for _, f := range collection.Fields {
+		if f.GetName() == "agent" {
+			return
+		}
+	}
+
+	agentsCollection, err := app.FindCollectionByNameOrId("agents")
+	if err != nil {
+		log.Printf("Warning: agents collection not found, skipping agent relation migration: %v", err)
+		return
+	}
+
+	collection.Fields.Add(
+		&core.RelationField{
+			Name:         "agent",
+			CollectionId: agentsCollection.Id,
+			MaxSelect:    1,
+		},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add agent relation to candy_ledger: %v", err)
+		return
+	}
+	log.Println("✅ Migrated candy_ledger: added agent relation field")
+
+	// Backfill existing records
+	var records []*core.Record
+	if err := app.FindAllRecords("candy_ledger", &records); err != nil {
+		log.Printf("Warning: failed to fetch candy_ledger records for backfill: %v", err)
+		return
+	}
+
+	for _, r := range records {
+		if r.GetString("agent") == "" {
+			r.Set("agent", r.GetString("agent_id"))
+			if err := app.Save(r); err != nil {
+				log.Printf("Warning: failed to backfill agent for record %s: %v", r.Id, err)
+			}
+		}
+	}
+	log.Printf("✅ Backfilled agent relation for %d records", len(records))
+}
+
+func ensureAgentBalancesView(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("agent_balances"); err == nil {
+		return // already exists
+	}
+
+	view := core.NewViewCollection("agent_balances")
+	view.ViewQuery = `SELECT a.id, a.name, a.enabled, COALESCE(SUM(cl.delta), 0) as balance FROM agents a LEFT JOIN candy_ledger cl ON cl.agent_id = a.id GROUP BY a.id`
+
+	if err := app.Save(view); err != nil {
+		log.Printf("Warning: failed to create agent_balances view: %v", err)
+	} else {
+		log.Println("✅ Created 'agent_balances' view")
 	}
 }
