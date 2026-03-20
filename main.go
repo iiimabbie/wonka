@@ -157,6 +157,7 @@ func handleAdjust(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 
 	record := core.NewRecord(collection)
 	record.Set("agent_id", agent.Id)
+	record.Set("agent", agent.Id)
 	record.Set("delta", body.Delta)
 	record.Set("reason", body.Reason)
 	record.Set("idempotency_key", body.IdempotencyKey)
