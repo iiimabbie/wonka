@@ -124,4 +124,13 @@ echo -n "YOUR_KEY_HERE" | sha256sum
 
 - **PocketBase** — embedded Go framework (SQLite + REST + Admin UI)
 - **agents** collection — stores agent credentials
-- **candy_ledger** collection — immutable transaction log
+- **candy_ledger** collection — immutable transaction log, includes `agent` relation field for Admin UI display
+- **agent_balances** view — aggregated candy balances per agent, auto-created on startup
+
+## Schema Auto-Migration
+
+On startup, the system automatically:
+1. Creates `agents` and `candy_ledger` collections if they don't exist
+2. Migrates `candy_ledger` to add `created_at` field (if missing)
+3. Migrates `candy_ledger` to add `agent` relation field (if missing), with backfill
+4. Creates `agent_balances` view for Admin UI balance overview
