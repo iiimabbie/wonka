@@ -110,8 +110,8 @@ func migrateAddAgentRelation(app *pocketbase.PocketBase) {
 	log.Println("✅ Migrated candy_ledger: added agent relation field")
 
 	// Backfill existing records
-	var records []*core.Record
-	if err := app.FindAllRecords("candy_ledger", &records); err != nil {
+	records, err := app.FindAllRecords("candy_ledger")
+	if err != nil {
 		log.Printf("Warning: failed to fetch candy_ledger records for backfill: %v", err)
 		return
 	}
