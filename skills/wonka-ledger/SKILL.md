@@ -73,3 +73,5 @@ curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledg
 - To correct mistakes, create a new adjustment with negative delta
 - Each agent can only see their own balance and history
 - Duplicate idempotencyKey returns `{"status":"duplicate"}` safely
+- Admin UI has `agent_balances` view for balance overview across all agents
+- Schema migrations run automatically on startup — no manual setup needed
