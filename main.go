@@ -120,6 +120,18 @@ func handleAdjust(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		})
 	}
 
+	if body.Delta == 0 {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "delta cannot be zero",
+		})
+	}
+
+	if body.Delta < -1000 || body.Delta > 1000 {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "delta must be between -1000 and 1000",
+		})
+	}
+
 	if body.Reason == "" {
 		return e.JSON(http.StatusBadRequest, map[string]string{
 			"error": "reason is required",
@@ -156,7 +168,7 @@ func handleAdjust(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	record := core.NewRecord(collection)
-	record.Set("agent_id", agent.Id)
+	record.Set("agent_id", agent.Id) // kept for backward compatibility
 	record.Set("agent", agent.Id)
 	record.Set("delta", body.Delta)
 	record.Set("reason", body.Reason)
@@ -247,5 +259,3 @@ func handleHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		"offset":  offset,
 	})
 }
-
-

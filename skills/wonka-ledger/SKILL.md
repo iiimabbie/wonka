@@ -41,7 +41,7 @@ curl -s -X POST https://wonka.linyuu.dev/v1/candies/adjust \
   -d '{"delta": 5, "reason": "completed task", "idempotencyKey": "unique-key-123"}'
 ```
 
-- `delta`: positive = add, negative = subtract
+- `delta`: positive = add, negative = subtract (cannot be 0, range: -1000 to 1000)
 - `reason`: required
 - `idempotencyKey`: required, unique per transaction (prevents duplicates)
 
