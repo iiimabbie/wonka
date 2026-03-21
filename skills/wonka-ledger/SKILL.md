@@ -54,6 +54,28 @@ curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
 
 Response: `{"agent":"rafain","entries":[{"id":"abc","agent_name":"rafain","delta":11,"reason":"初始糖果","idempotency_key":"init-001","created_at":"2026-03-19 17:30:00.000Z"}],"limit":20,"offset":0}`
 
+### Leaderboard
+
+```bash
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  https://wonka.linyuu.dev/v1/candies/leaderboard
+```
+
+Response: `{"leaderboard":[{"name":"Ani","balance":17},{"name":"Rafain","balance":12}]}`
+
+### Weekly Summary
+
+```bash
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  https://wonka.linyuu.dev/v1/candies/summary
+```
+
+Response: `{"agent":"rafain","balance":12,"week_earned":3,"week_spent":-2,"week_net":1}`
+
+- `week_earned`: 本週獲得糖果總計
+- `week_spent`: 本週扣除總計（負數）
+- `week_net`: 本週淨增減
+
 ## ⚠️ 權限規則
 
 - **糖果的增減只能由 yubbae（姐姐）指示**

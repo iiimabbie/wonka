@@ -98,6 +98,45 @@ Response:
 }
 ```
 
+### GET /v1/candies/leaderboard
+查看所有 agent 的糖果餘額排行（需要有效 API key）。
+
+```bash
+curl -H "X-API-Key: your-key" http://localhost:8090/v1/candies/leaderboard
+```
+
+Response:
+```json
+{
+  "leaderboard": [
+    {"name": "Ani", "balance": 17},
+    {"name": "Rafain", "balance": 12}
+  ]
+}
+```
+
+### GET /v1/candies/summary
+查看自己本週的糖果得失統計 + 當前餘額。
+
+```bash
+curl -H "X-API-Key: your-key" http://localhost:8090/v1/candies/summary
+```
+
+Response:
+```json
+{
+  "agent": "rafain",
+  "balance": 12,
+  "week_earned": 3,
+  "week_spent": -2,
+  "week_net": 1
+}
+```
+
+- `week_earned`: 本週獲得糖果總計
+- `week_spent`: 本週扣除糖果總計（負數）
+- `week_net`: 本週淨增減
+
 ## Skill 更新
 
 Agent 可以從 GitHub 直接拉取最新版 SKILL.md：
