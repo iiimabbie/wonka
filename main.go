@@ -28,6 +28,10 @@ func main() {
 			return handleHistory(e, app)
 		})
 
+		se.Router.GET("/v1/candies/leaderboard", func(e *core.RequestEvent) error {
+			return handleLeaderboard(e, app)
+		})
+
 		return se.Next()
 	})
 
@@ -199,6 +203,43 @@ func handleAdjust(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		"delta":       body.Delta,
 		"reason":      body.Reason,
 		"new_balance": result.Total,
+	})
+}
+
+// --- GET /v1/candies/leaderboard ---
+func handleLeaderboard(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	_, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	type Entry struct {
+		Name    string  `db:"name" json:"name"`
+		Balance float64 `db:"balance" json:"balance"`
+	}
+
+	var entries []Entry
+	err = app.DB().NewQuery(`
+		SELECT a.name, COALESCE(SUM(cl.delta), 0) as balance
+		FROM agents a
+		LEFT JOIN candy_ledger cl ON cl.agent_id = a.id
+		WHERE a.enabled = true
+		GROUP BY a.id, a.name
+		ORDER BY balance DESC
+	`).All(&entries)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to query leaderboard",
+		})
+	}
+
+	if entries == nil {
+		entries = []Entry{}
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"leaderboard": entries,
 	})
 }
 
