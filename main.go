@@ -32,6 +32,10 @@ func main() {
 			return handleLeaderboard(e, app)
 		})
 
+		se.Router.GET("/v1/candies/summary", func(e *core.RequestEvent) error {
+			return handleSummary(e, app)
+		})
+
 		return se.Next()
 	})
 
@@ -240,6 +244,57 @@ func handleLeaderboard(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 
 	return e.JSON(http.StatusOK, map[string]any{
 		"leaderboard": entries,
+	})
+}
+
+// --- GET /v1/candies/summary ---
+func handleSummary(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	agent, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	type WeekEntry struct {
+		Earned float64 `db:"earned" json:"earned"`
+		Spent  float64 `db:"spent" json:"spent"`
+	}
+
+	var week WeekEntry
+	err = app.DB().NewQuery(`
+		SELECT
+			COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) as earned,
+			COALESCE(SUM(CASE WHEN delta < 0 THEN delta ELSE 0 END), 0) as spent
+		FROM candy_ledger
+		WHERE agent_id = {:agentId}
+		  AND created_at >= datetime('now', '-7 days')
+	`).Bind(map[string]any{
+		"agentId": agent.Id,
+	}).One(&week)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to query summary",
+		})
+	}
+
+	type Result struct {
+		Total float64 `db:"total"`
+	}
+	var balance Result
+	_ = app.DB().NewQuery(`
+		SELECT COALESCE(SUM(delta), 0) as total
+		FROM candy_ledger
+		WHERE agent_id = {:agentId}
+	`).Bind(map[string]any{
+		"agentId": agent.Id,
+	}).One(&balance)
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"agent":       agent.GetString("name"),
+		"balance":     balance.Total,
+		"week_earned": week.Earned,
+		"week_spent":  week.Spent,
+		"week_net":    week.Earned + week.Spent,
 	})
 }
 
