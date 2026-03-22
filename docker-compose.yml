@@ -9,3 +9,7 @@ services:
       - ./pb_data:/app/pb_data
     environment:
       - TZ=Asia/Taipei
+      - WONKA_ADMIN_KEY=${WONKA_ADMIN_KEY}
+      - WONKA_AI_API_KEY=${WONKA_AI_API_KEY}
+      - WONKA_AI_BASE_URL=${WONKA_AI_BASE_URL}
+      - WONKA_AI_MODEL=${WONKA_AI_MODEL}
