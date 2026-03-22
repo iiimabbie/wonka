@@ -72,6 +72,10 @@ func main() {
 			return handlePriceHistory(e, app)
 		})
 
+		se.Router.GET("/v1/market/events", func(e *core.RequestEvent) error {
+			return handleMarketEvents(e, app)
+		})
+
 		se.Router.POST("/v1/market/refresh", func(e *core.RequestEvent) error {
 			return handleMarketRefresh(e, app)
 		})

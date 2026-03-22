@@ -525,3 +525,35 @@ func handlePriceHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error 
 
 	return e.JSON(http.StatusOK, map[string]any{"prices": points})
 }
+
+// --- GET /v1/market/events ---
+func handleMarketEvents(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	_, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	limit, _ := strconv.Atoi(e.Request.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 50 {
+		limit = 14 // ~7 days x 2 refreshes
+	}
+
+	type Event struct {
+		Description string `db:"description" json:"description"`
+		HappenedAt  string `db:"happened_at" json:"happened_at"`
+	}
+
+	var events []Event
+	err = app.DB().NewQuery(`
+		SELECT description, happened_at FROM market_events
+		ORDER BY happened_at DESC LIMIT {:limit}
+	`).Bind(map[string]any{"limit": limit}).All(&events)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query events"})
+	}
+	if events == nil {
+		events = []Event{}
+	}
+	return e.JSON(http.StatusOK, map[string]any{"events": events})
+}
