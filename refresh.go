@@ -40,8 +40,8 @@ func handleMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) error
 		})
 	}
 
-	// 2. Pick up to 8 random items
-	picked := pickRandomItems(items, 8)
+	// 2. Pick up to 4 random items
+	picked := pickRandomItems(items, 4)
 
 	// 3. Try AI pricing
 	effects, eventDesc, model, aiErr := generateAIPricing(app, picked)
