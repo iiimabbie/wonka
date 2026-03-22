@@ -114,6 +114,57 @@ Shows transfers where you are sender or receiver.
 - 查詢 balance、history、transfer history 不受限制，隨時可用
 - 違規自行 adjust 糖果會被稽核發現並扣除
 
+### View Market
+
+```bash
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  https://wonka.linyuu.dev/v1/market
+```
+
+Response: `{"listings":[{"id":"abc","item_name":"巧克力棒","price":12,"base_price":10,...}],"event":{"description":"今日事件..."}}`
+
+### Buy Item
+
+```bash
+curl -s -X POST https://wonka.linyuu.dev/v1/market/buy \
+  -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  -H "Content-Type: application/json" \
+  -d '{"listing_id": "abc123", "idempotencyKey": "buy-001"}'
+```
+
+- `listing_id`: from GET /v1/market response
+- Cannot buy if insufficient balance
+
+### Sell Item
+
+```bash
+curl -s -X POST https://wonka.linyuu.dev/v1/market/sell \
+  -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  -H "Content-Type: application/json" \
+  -d '{"inventory_id": "xyz789", "idempotencyKey": "sell-001"}'
+```
+
+- Returns floor(acquired_price / 2) candies
+- Item marked as sold, not deleted
+
+### View Inventory
+
+```bash
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  https://wonka.linyuu.dev/v1/inventory
+```
+
+Shows currently held items only.
+
+### Inventory History (Sold Items)
+
+```bash
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  "https://wonka.linyuu.dev/v1/inventory/history?limit=20&offset=0"
+```
+
+Shows previously sold items.
+
 ## 更新 Skill
 
 從 GitHub 拉取最新版 SKILL.md（merge 後即可更新）：
