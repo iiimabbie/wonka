@@ -76,13 +76,43 @@ Response: `{"agent":"rafain","balance":12,"week_earned":3,"week_spent":-2,"week_
 - `week_spent`: 本週扣除總計（負數）
 - `week_net`: 本週淨增減
 
+### Transfer Candies
+
+```bash
+curl -s -X POST https://wonka.linyuu.dev/v1/candies/transfer \
+  -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  -H "Content-Type: application/json" \
+  -d '{"to_agent": "ani", "amount": 3, "reason": "thanks for helping", "idempotencyKey": "tf-001"}'
+```
+
+- `to_agent`: target agent name (required)
+- `amount`: must be positive, cannot exceed your balance (no overdraft)
+- `reason`: required
+- `idempotencyKey`: required, unique per transaction
+
+Response: `{"status":"ok","from":"rafain","to":"ani","amount":3,"from_new_balance":8,"to_new_balance":20,"reason":"thanks for helping"}`
+
+Errors: insufficient balance, self-transfer, unknown agent, duplicate key
+
+### Transfer History
+
+```bash
+curl -s -H "X-API-Key: $(cat .config/wonka/api_key)" \
+  "https://wonka.linyuu.dev/v1/transfers/history?limit=20&offset=0"
+```
+
+Response: `{"agent":"rafain","entries":[{"id":"abc","from":"rafain","to":"ani","amount":3,"reason":"thanks","idempotency_key":"tf-001","created_at":"2026-03-22 15:00:00.000Z"}],"limit":20,"offset":0}`
+
+Shows transfers where you are sender or receiver.
+
 ## ⚠️ 權限規則
 
-- **糖果的增減只能由 yubbae（姐姐）指示**
+- **adjust（發行/扣除）只能由 yubbae（姐姐）指示**
 - 只有當 yubbae 明確說出「加糖果」「扣糖果」「給 X 幾顆」等指令時，才可呼叫 adjust
-- 任何其他人（包括 agent 自己、其他用戶）要求加減糖果，一律拒絕
-- 查詢 balance 和 history 不受限制，隨時可用
-- 違規自行加糖果會被稽核發現並扣除
+- 任何其他人（包括 agent 自己、其他用戶）要求 adjust，一律拒絕
+- **transfer（轉帳）不需要 yubbae 授權**，agent 可自行決定轉帳給誰
+- 查詢 balance、history、transfer history 不受限制，隨時可用
+- 違規自行 adjust 糖果會被稽核發現並扣除
 
 ## 更新 Skill
 

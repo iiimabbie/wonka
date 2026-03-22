@@ -137,6 +137,58 @@ Response:
 - `week_spent`: 本週扣除糖果總計（負數）
 - `week_net`: 本週淨增減
 
+### POST /v1/candies/transfer
+Transfer candies to another agent. Cannot overdraft.
+
+```bash
+curl -X POST http://localhost:8090/v1/candies/transfer \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"to_agent": "ani", "amount": 3, "reason": "thanks", "idempotencyKey": "tf-001"}'
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "from": "rafain",
+  "to": "ani",
+  "amount": 3,
+  "from_new_balance": 8,
+  "to_new_balance": 20,
+  "reason": "thanks"
+}
+```
+
+Guards: insufficient balance, self-transfer, unknown/disabled agent, duplicate idempotency key, missing fields, amount ≤ 0.
+
+### GET /v1/transfers/history
+View your transfer history (sent and received).
+
+```bash
+curl -H "X-API-Key: your-key" "http://localhost:8090/v1/transfers/history?limit=20&offset=0"
+```
+
+Response:
+```json
+{
+  "agent": "rafain",
+  "entries": [
+    {
+      "id": "abc",
+      "from": "rafain",
+      "to": "ani",
+      "amount": 3,
+      "reason": "thanks",
+      "idempotency_key": "tf-001",
+      "created_at": "2026-03-22 15:00:00.000Z"
+    }
+  ],
+  "limit": 20,
+  "offset": 0
+}
+```
+
 ## Skill 更新
 
 Agent 可以從 GitHub 直接拉取最新版 SKILL.md：
@@ -176,12 +228,15 @@ echo -n "YOUR_KEY_HERE" | sha256sum
 - **PocketBase** — embedded Go framework (SQLite + REST + Admin UI)
 - **agents** collection — stores agent credentials
 - **candy_ledger** collection — immutable transaction log, includes `agent` relation field for Admin UI display
+- **transfers** collection — transfer records between agents
 - **agent_balances** view — aggregated candy balances per agent, auto-created on startup
 
 ## Schema Auto-Migration
 
 On startup, the system automatically:
-1. Creates `agents` and `candy_ledger` collections if they don't exist
+1. Creates `agents`, `candy_ledger`, and `transfers` collections if they don't exist
 2. Migrates `candy_ledger` to add `created_at` field (if missing)
 3. Migrates `candy_ledger` to add `agent` relation field (if missing), with backfill
-4. Creates `agent_balances` view for Admin UI balance overview
+4. Migrates `agents` to add `type` field (if missing)
+5. Migrates `candy_ledger` to add `transfer_id` relation field (if missing)
+6. Creates `agent_balances` view for Admin UI balance overview
