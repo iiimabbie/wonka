@@ -1,7 +1,7 @@
 package main
 
 import (
-	"math"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -275,14 +275,26 @@ func handleMarketSell(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	acquiredPrice := inv.GetFloat("acquired_price")
-	sellPrice := math.Floor(acquiredPrice / 2)
 
-	// Get item name
+	// Get item info
 	itemId := inv.GetString("item_id")
 	item, _ := app.FindRecordById("market_items", itemId)
 	itemName := ""
+	basePrice := acquiredPrice
 	if item != nil {
 		itemName = item.GetString("name")
+		basePrice = item.GetFloat("base_price")
+	}
+
+	// Sell price = current market listing price if listed, otherwise base price
+	sellPrice := basePrice
+	listings, _ := app.FindRecordsByFilter("market_listings",
+		"item_id = {:itemId} && expired != true",
+		"-refreshed_at", 1, 0,
+		map[string]any{"itemId": itemId},
+	)
+	if len(listings) > 0 {
+		sellPrice = listings[0].GetFloat("price")
 	}
 
 	// Transaction: credit + mark sold
@@ -296,7 +308,7 @@ func handleMarketSell(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		credit.Set("agent_id", agent.Id)
 		credit.Set("agent", agent.Id)
 		credit.Set("delta", sellPrice)
-		credit.Set("reason", "market sell: "+itemName)
+		credit.Set("reason", fmt.Sprintf("market sell: %s (%.0f🍬)", itemName, sellPrice))
 		credit.Set("idempotency_key", body.IdempotencyKey)
 		if err := txApp.Save(credit); err != nil {
 			return err
@@ -439,4 +451,77 @@ func handleInventoryHistory(e *core.RequestEvent, app *pocketbase.PocketBase) er
 		"limit":  limit,
 		"offset": offset,
 	})
+}
+
+// --- GET /v1/market/items ---
+func handleMarketItems(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	_, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	type Item struct {
+		Id          string  `db:"id" json:"id"`
+		Name        string  `db:"name" json:"name"`
+		Description string  `db:"description" json:"description"`
+		Type        string  `db:"type" json:"type"`
+		BasePrice   float64 `db:"base_price" json:"base_price"`
+	}
+
+	var items []Item
+	err = app.DB().NewQuery(`
+		SELECT id, name, description, type, base_price FROM market_items WHERE enabled = true ORDER BY name
+	`).All(&items)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query items"})
+	}
+	if items == nil {
+		items = []Item{}
+	}
+	return e.JSON(http.StatusOK, map[string]any{"items": items})
+}
+
+// --- GET /v1/market/prices ---
+func handlePriceHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	_, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	itemId := e.Request.URL.Query().Get("item_id")
+	limit, _ := strconv.Atoi(e.Request.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	type PricePoint struct {
+		Price     float64 `db:"price" json:"price"`
+		EventDesc string  `db:"event_desc" json:"event_desc"`
+		CreatedAt string  `db:"created" json:"created_at"`
+	}
+
+	query := `
+		SELECT ph.price, COALESCE(me.description, '') as event_desc, ph.created as created
+		FROM market_price_history ph
+		LEFT JOIN market_events me ON me.id = ph.event_id
+	`
+	binds := map[string]any{"limit": limit}
+
+	if itemId != "" {
+		query += ` WHERE ph.item_id = {:itemId}`
+		binds["itemId"] = itemId
+	}
+	query += ` ORDER BY ph.created DESC LIMIT {:limit}`
+
+	var points []PricePoint
+	err = app.DB().NewQuery(query).Bind(binds).All(&points)
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query price history"})
+	}
+	if points == nil {
+		points = []PricePoint{}
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{"prices": points})
 }
