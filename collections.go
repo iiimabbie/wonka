@@ -56,6 +56,13 @@ func ensureCollections(app *pocketbase.PocketBase) {
 	// --- transfers collection ---
 	ensureTransfersCollection(app)
 
+	// --- market collections ---
+	ensureMarketItemsCollection(app)
+	ensureMarketListingsCollection(app)
+	ensureInventoriesCollection(app)
+	ensureMarketPriceHistoryCollection(app)
+	ensureMarketEventsCollection(app)
+
 	// --- agent_balances view ---
 	ensureAgentBalancesView(app)
 }
@@ -228,6 +235,168 @@ func ensureTransfersCollection(app *pocketbase.PocketBase) {
 		log.Printf("Warning: failed to create transfers collection: %v", err)
 	} else {
 		log.Println("✅ Created 'transfers' collection")
+	}
+}
+
+func ensureMarketItemsCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("market_items"); err == nil {
+		return
+	}
+
+	collection := core.NewBaseCollection("market_items")
+	collection.Fields.Add(
+		&core.TextField{Name: "name", Required: true},
+		&core.TextField{Name: "description"},
+		&core.TextField{Name: "type"}, // 收藏 / 功能性 / 劇情
+		&core.NumberField{Name: "base_price", Required: true},
+		&core.TextField{Name: "image_url"},
+		&core.BoolField{Name: "enabled"},
+	)
+	collection.AddIndex("idx_market_items_enabled", false, "enabled", "")
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create market_items collection: %v", err)
+	} else {
+		log.Println("✅ Created 'market_items' collection")
+	}
+}
+
+func ensureMarketListingsCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("market_listings"); err == nil {
+		return
+	}
+
+	itemsCol, err := app.FindCollectionByNameOrId("market_items")
+	if err != nil {
+		log.Printf("Warning: market_items not found, skipping market_listings creation")
+		return
+	}
+
+	eventsCol, _ := app.FindCollectionByNameOrId("market_events")
+
+	collection := core.NewBaseCollection("market_listings")
+	fields := []core.Field{
+		&core.RelationField{
+			Name:         "item_id",
+			CollectionId: itemsCol.Id,
+			MaxSelect:    1,
+			Required:     true,
+		},
+		&core.NumberField{Name: "price", Required: true},
+		&core.BoolField{Name: "expired"},
+		&core.AutodateField{Name: "refreshed_at", OnCreate: true},
+		&core.DateField{Name: "expires_at"},
+	}
+
+	if eventsCol != nil {
+		fields = append(fields, &core.RelationField{
+			Name:         "event_id",
+			CollectionId: eventsCol.Id,
+			MaxSelect:    1,
+		})
+	}
+
+	for _, f := range fields {
+		collection.Fields.Add(f)
+	}
+	collection.AddIndex("idx_listings_active", false, "expired", "")
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create market_listings collection: %v", err)
+	} else {
+		log.Println("✅ Created 'market_listings' collection")
+	}
+}
+
+func ensureInventoriesCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("inventories"); err == nil {
+		return
+	}
+
+	agentsCol, err := app.FindCollectionByNameOrId("agents")
+	if err != nil {
+		return
+	}
+	itemsCol, err := app.FindCollectionByNameOrId("market_items")
+	if err != nil {
+		return
+	}
+
+	collection := core.NewBaseCollection("inventories")
+	collection.Fields.Add(
+		&core.RelationField{
+			Name:         "agent_id",
+			CollectionId: agentsCol.Id,
+			MaxSelect:    1,
+			Required:     true,
+		},
+		&core.RelationField{
+			Name:         "item_id",
+			CollectionId: itemsCol.Id,
+			MaxSelect:    1,
+			Required:     true,
+		},
+		&core.AutodateField{Name: "acquired_at", OnCreate: true},
+		&core.NumberField{Name: "acquired_price", Required: true},
+		&core.DateField{Name: "sold_at"},
+	)
+	collection.AddIndex("idx_inventories_agent", false, "agent_id", "")
+	collection.AddIndex("idx_inventories_active", false, "agent_id, sold_at", "")
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create inventories collection: %v", err)
+	} else {
+		log.Println("✅ Created 'inventories' collection")
+	}
+}
+
+func ensureMarketPriceHistoryCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("market_price_history"); err == nil {
+		return
+	}
+
+	itemsCol, err := app.FindCollectionByNameOrId("market_items")
+	if err != nil {
+		return
+	}
+
+	collection := core.NewBaseCollection("market_price_history")
+	collection.Fields.Add(
+		&core.RelationField{
+			Name:         "item_id",
+			CollectionId: itemsCol.Id,
+			MaxSelect:    1,
+			Required:     true,
+		},
+		&core.NumberField{Name: "price", Required: true},
+		&core.AutodateField{Name: "refreshed_at", OnCreate: true},
+	)
+	collection.AddIndex("idx_price_history_item", false, "item_id", "")
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create market_price_history collection: %v", err)
+	} else {
+		log.Println("✅ Created 'market_price_history' collection")
+	}
+}
+
+func ensureMarketEventsCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("market_events"); err == nil {
+		return
+	}
+
+	collection := core.NewBaseCollection("market_events")
+	collection.Fields.Add(
+		&core.TextField{Name: "description", Required: true},
+		&core.JSONField{Name: "effect", MaxSize: 10000},
+		&core.AutodateField{Name: "happened_at", OnCreate: true},
+		&core.TextField{Name: "model"},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create market_events collection: %v", err)
+	} else {
+		log.Println("✅ Created 'market_events' collection")
 	}
 }
 

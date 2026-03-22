@@ -189,6 +189,60 @@ Response:
 }
 ```
 
+### GET /v1/market
+View currently active market listings and latest event.
+
+```bash
+curl -H "X-API-Key: your-key" http://localhost:8090/v1/market
+```
+
+### POST /v1/market/buy
+Buy an item from the market.
+
+```bash
+curl -X POST http://localhost:8090/v1/market/buy \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"listing_id": "abc123", "idempotencyKey": "buy-001"}'
+```
+
+### POST /v1/market/sell
+Sell an inventory item at half price.
+
+```bash
+curl -X POST http://localhost:8090/v1/market/sell \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"inventory_id": "xyz789", "idempotencyKey": "sell-001"}'
+```
+
+### GET /v1/inventory
+View your currently held items.
+
+### GET /v1/inventory/history
+View your sold items history (limit/offset).
+
+### POST /v1/market/refresh (Admin)
+Trigger market refresh. Requires `X-Admin-Key` header.
+
+```bash
+curl -X POST http://localhost:8090/v1/market/refresh \
+  -H "X-Admin-Key: your-admin-key"
+```
+
+Picks up to 8 random enabled items, generates AI event + pricing, creates new listings.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `WONKA_ADMIN_KEY` | Admin key for refresh endpoint |
+| `WONKA_AI_API_KEY` | API key for AI pricing (OpenAI/Gemini) |
+| `WONKA_AI_BASE_URL` | AI API base URL (e.g. `https://api.openai.com/v1`) |
+| `WONKA_AI_MODEL` | AI model name (e.g. `gpt-4o-mini`) |
+
+If AI env vars are missing or AI call fails, pricing falls back to base_price ±20% random.
+
 ## Skill 更新
 
 Agent 可以從 GitHub 直接拉取最新版 SKILL.md：

@@ -44,6 +44,30 @@ func main() {
 			return handleTransferHistory(e, app)
 		})
 
+		se.Router.GET("/v1/market", func(e *core.RequestEvent) error {
+			return handleMarket(e, app)
+		})
+
+		se.Router.POST("/v1/market/buy", func(e *core.RequestEvent) error {
+			return handleMarketBuy(e, app)
+		})
+
+		se.Router.POST("/v1/market/sell", func(e *core.RequestEvent) error {
+			return handleMarketSell(e, app)
+		})
+
+		se.Router.GET("/v1/inventory", func(e *core.RequestEvent) error {
+			return handleInventory(e, app)
+		})
+
+		se.Router.GET("/v1/inventory/history", func(e *core.RequestEvent) error {
+			return handleInventoryHistory(e, app)
+		})
+
+		se.Router.POST("/v1/market/refresh", func(e *core.RequestEvent) error {
+			return handleMarketRefresh(e, app)
+		})
+
 		return se.Next()
 	})
 
