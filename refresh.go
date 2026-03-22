@@ -98,7 +98,10 @@ func handleMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) error
 			delta = (rand.Float64()*0.6 - 0.3) // -0.3 to +0.3
 		}
 
-		// No clamp — 投資理財有賺有賠，詳情請閱讀公開說明書
+		// Clamp: max +50% up, no floor on down (but price min 1)
+		if delta > 0.5 {
+			delta = 0.5
+		}
 
 		price := math.Max(1, math.Round(basePrice*(1+delta)))
 
@@ -176,17 +179,33 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 		ORDER BY happened_at DESC LIMIT 5
 	`).All(&recentEvents)
 
-	// Build item list
+	// Build item list with recent price history
 	type ItemInfo struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
+		Name      string    `json:"name"`
+		Type      string    `json:"type"`
+		BasePrice float64   `json:"base_price"`
+		History   []float64 `json:"recent_prices"`
 	}
 	var itemList []ItemInfo
 	for _, item := range items {
-		itemList = append(itemList, ItemInfo{
-			Name: item.GetString("name"),
-			Type: item.GetString("type"),
-		})
+		info := ItemInfo{
+			Name:      item.GetString("name"),
+			Type:      item.GetString("type"),
+			BasePrice: item.GetFloat("base_price"),
+		}
+		// Fetch last 10 prices
+		type PH struct {
+			Price float64 `db:"price"`
+		}
+		var ph []PH
+		_ = app.DB().NewQuery(`
+			SELECT price FROM market_price_history
+			WHERE item_id = {:id} ORDER BY created DESC LIMIT 10
+		`).Bind(map[string]any{"id": item.Id}).All(&ph)
+		for _, p := range ph {
+			info.History = append(info.History, p.Price)
+		}
+		itemList = append(itemList, info)
 	}
 
 	// Build history text
@@ -202,7 +221,7 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 
 	prompt := fmt.Sprintf(`你是一個糖果市場的分析師。請生成一個今日市場事件，並根據事件內容決定以下物品的價格漲跌幅。
 
-物品清單：
+物品清單（含底價與近期成交價）：
 %s
 
 近期事件歷史：
@@ -211,8 +230,13 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 請用 JSON 回覆，格式如下（不要包含 markdown code block）：
 {"event": "事件描述（一句話，有故事感）", "effects": {"物品名稱": 漲跌幅數值}}
 
-漲跌幅無上限，大膽定價！可以暴漲 200%%，也可以崩盤 -80%%。投資理財有賺有賠。製造戲劇性的市場波動讓玩家驚喜。
-請確保事件內容與物品的漲跌有邏輯關聯。`, string(itemsJSON), historyText)
+定價規則：
+1. 漲跌幅數值是相對底價的比例，例如 0.2 = 漲 20%%，-0.3 = 跌 30%%
+2. 正常日：大部分物品在 ±30%% 內小幅波動
+3. 偶爾（約 1/5 的機率）可以有一個物品大漲到 +50%% 或大跌到 -60%%
+4. 價格不能低於 1（最低 1 糖果幣）
+5. 參考 recent_prices 維持合理走勢，不要突然從底價 5 跳到 500
+6. 事件內容要有故事感，跟物品漲跌有邏輯關聯`, string(itemsJSON), historyText)
 
 	// Call AI API
 	reqBody, _ := json.Marshal(map[string]any{
