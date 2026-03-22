@@ -496,23 +496,20 @@ func handlePriceHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error 
 	}
 
 	type PricePoint struct {
-		Price     float64 `db:"price" json:"price"`
-		EventDesc string  `db:"event_desc" json:"event_desc"`
-		CreatedAt string  `db:"created" json:"created_at"`
+		Price       float64 `db:"price" json:"price"`
+		RefreshedAt string  `db:"refreshed_at" json:"refreshed_at"`
 	}
 
 	query := `
-		SELECT ph.price, COALESCE(me.description, '') as event_desc, ph.created as created
-		FROM market_price_history ph
-		LEFT JOIN market_events me ON me.id = ph.event_id
+		SELECT price, refreshed_at FROM market_price_history
 	`
 	binds := map[string]any{"limit": limit}
 
 	if itemId != "" {
-		query += ` WHERE ph.item_id = {:itemId}`
+		query += ` WHERE item_id = {:itemId}`
 		binds["itemId"] = itemId
 	}
-	query += ` ORDER BY ph.created DESC LIMIT {:limit}`
+	query += ` ORDER BY refreshed_at DESC LIMIT {:limit}`
 
 	var points []PricePoint
 	err = app.DB().NewQuery(query).Bind(binds).All(&points)
