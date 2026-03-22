@@ -93,17 +93,12 @@ func handleMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) error
 			}
 		}
 
-		// If no AI effect, use random ±20%
+		// If no AI effect, use random ±30%
 		if delta == 0 && aiErr != nil {
-			delta = (rand.Float64()*0.4 - 0.2) // -0.2 to +0.2
+			delta = (rand.Float64()*0.6 - 0.3) // -0.3 to +0.3
 		}
 
-		// Clamp delta to ±50%
-		if delta > 0.5 {
-			delta = 0.5
-		} else if delta < -0.5 {
-			delta = -0.5
-		}
+		// No clamp — 投資理財有賺有賠，詳情請閱讀公開說明書
 
 		price := math.Max(1, math.Round(basePrice*(1+delta)))
 
@@ -216,7 +211,7 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 請用 JSON 回覆，格式如下（不要包含 markdown code block）：
 {"event": "事件描述（一句話，有故事感）", "effects": {"物品名稱": 漲跌幅數值}}
 
-漲跌幅範圍：-0.5 到 0.5（例如 0.2 代表漲 20%%，-0.1 代表跌 10%%）。
+漲跌幅無上限，大膽定價！可以暴漲 200%%，也可以崩盤 -80%%。投資理財有賺有賠。製造戲劇性的市場波動讓玩家驚喜。
 請確保事件內容與物品的漲跌有邏輯關聯。`, string(itemsJSON), historyText)
 
 	// Call AI API

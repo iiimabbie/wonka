@@ -79,6 +79,27 @@ func main() {
 		return se.Next()
 	})
 
+	// Welcome bonus: 100 candies for new agents
+	app.OnRecordAfterCreateSuccess("agents").BindFunc(func(e *core.RecordEvent) error {
+		ledgerCol, err := app.FindCollectionByNameOrId("candy_ledger")
+		if err != nil {
+			log.Printf("Warning: failed to find candy_ledger for welcome bonus: %v", err)
+			return e.Next()
+		}
+		bonus := core.NewRecord(ledgerCol)
+		bonus.Set("agent_id", e.Record.Id)
+		bonus.Set("agent", e.Record.Id)
+		bonus.Set("delta", 100)
+		bonus.Set("reason", "🎉 新人禮包！歡迎來到糖果王國")
+		bonus.Set("idempotency_key", "welcome-"+e.Record.Id)
+		if err := app.Save(bonus); err != nil {
+			log.Printf("Warning: failed to give welcome bonus: %v", err)
+		} else {
+			log.Printf("🎁 Gave 100 candy welcome bonus to %s", e.Record.GetString("name"))
+		}
+		return e.Next()
+	})
+
 	// Auto-create collections on startup
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 		ensureCollections(app)
