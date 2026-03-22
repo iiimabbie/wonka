@@ -36,6 +36,14 @@ func main() {
 			return handleSummary(e, app)
 		})
 
+		se.Router.POST("/v1/candies/transfer", func(e *core.RequestEvent) error {
+			return handleTransfer(e, app)
+		})
+
+		se.Router.GET("/v1/transfers/history", func(e *core.RequestEvent) error {
+			return handleTransferHistory(e, app)
+		})
+
 		return se.Next()
 	})
 
@@ -295,6 +303,231 @@ func handleSummary(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		"week_earned": week.Earned,
 		"week_spent":  week.Spent,
 		"week_net":    week.Earned + week.Spent,
+	})
+}
+
+// --- POST /v1/candies/transfer ---
+func handleTransfer(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	fromAgent, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	var body struct {
+		ToAgent        string  `json:"to_agent"`
+		Amount         float64 `json:"amount"`
+		Reason         string  `json:"reason"`
+		IdempotencyKey string  `json:"idempotencyKey"`
+	}
+
+	if err := e.BindBody(&body); err != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+	}
+
+	if body.ToAgent == "" {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "to_agent is required",
+		})
+	}
+	if body.Amount <= 0 {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "amount must be positive",
+		})
+	}
+	if body.Reason == "" {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "reason is required",
+		})
+	}
+	if body.IdempotencyKey == "" {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "idempotencyKey is required",
+		})
+	}
+
+	// Resolve target agent by name
+	toAgent, findErr := app.FindFirstRecordByFilter("agents", "name = {:name} && enabled = true", map[string]any{
+		"name": body.ToAgent,
+	})
+	if findErr != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "target agent not found or disabled",
+		})
+	}
+
+	if toAgent.Id == fromAgent.Id {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "cannot transfer to yourself",
+		})
+	}
+
+	// Check idempotency
+	existing, _ := app.FindFirstRecordByFilter("transfers",
+		"idempotency_key = {:key}",
+		map[string]any{"key": body.IdempotencyKey},
+	)
+	if existing != nil {
+		return e.JSON(http.StatusOK, map[string]string{
+			"status": "duplicate",
+			"id":     existing.Id,
+		})
+	}
+
+	// Check sender balance
+	type BalResult struct {
+		Total float64 `db:"total"`
+	}
+	var bal BalResult
+	_ = app.DB().NewQuery(`
+		SELECT COALESCE(SUM(delta), 0) as total
+		FROM candy_ledger
+		WHERE agent_id = {:agentId}
+	`).Bind(map[string]any{
+		"agentId": fromAgent.Id,
+	}).One(&bal)
+
+	if bal.Total < body.Amount {
+		return e.JSON(http.StatusBadRequest, map[string]any{
+			"error":   "insufficient balance",
+			"balance": bal.Total,
+			"amount":  body.Amount,
+		})
+	}
+
+	// Run in transaction
+	txErr := app.RunInTransaction(func(txApp core.App) error {
+		// 1. Create transfer record
+		transfersCol, err := txApp.FindCollectionByNameOrId("transfers")
+		if err != nil {
+			return err
+		}
+		transfer := core.NewRecord(transfersCol)
+		transfer.Set("from_agent", fromAgent.Id)
+		transfer.Set("to_agent", toAgent.Id)
+		transfer.Set("amount", body.Amount)
+		transfer.Set("reason", body.Reason)
+		transfer.Set("idempotency_key", body.IdempotencyKey)
+		if err := txApp.Save(transfer); err != nil {
+			return err
+		}
+
+		// 2. Debit from sender
+		ledgerCol, err := txApp.FindCollectionByNameOrId("candy_ledger")
+		if err != nil {
+			return err
+		}
+		debit := core.NewRecord(ledgerCol)
+		debit.Set("agent_id", fromAgent.Id)
+		debit.Set("agent", fromAgent.Id)
+		debit.Set("delta", -body.Amount)
+		debit.Set("reason", "transfer to "+toAgent.GetString("name")+": "+body.Reason)
+		debit.Set("idempotency_key", body.IdempotencyKey+"-debit")
+		debit.Set("transfer_id", transfer.Id)
+		if err := txApp.Save(debit); err != nil {
+			return err
+		}
+
+		// 3. Credit to receiver
+		credit := core.NewRecord(ledgerCol)
+		credit.Set("agent_id", toAgent.Id)
+		credit.Set("agent", toAgent.Id)
+		credit.Set("delta", body.Amount)
+		credit.Set("reason", "transfer from "+fromAgent.GetString("name")+": "+body.Reason)
+		credit.Set("idempotency_key", body.IdempotencyKey+"-credit")
+		credit.Set("transfer_id", transfer.Id)
+		if err := txApp.Save(credit); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if txErr != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "transfer failed: " + txErr.Error(),
+		})
+	}
+
+	// Get new balances
+	var fromBal, toBal BalResult
+	_ = app.DB().NewQuery(`SELECT COALESCE(SUM(delta), 0) as total FROM candy_ledger WHERE agent_id = {:id}`).
+		Bind(map[string]any{"id": fromAgent.Id}).One(&fromBal)
+	_ = app.DB().NewQuery(`SELECT COALESCE(SUM(delta), 0) as total FROM candy_ledger WHERE agent_id = {:id}`).
+		Bind(map[string]any{"id": toAgent.Id}).One(&toBal)
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"status":          "ok",
+		"from":            fromAgent.GetString("name"),
+		"to":              toAgent.GetString("name"),
+		"amount":          body.Amount,
+		"reason":          body.Reason,
+		"from_new_balance": fromBal.Total,
+		"to_new_balance":  toBal.Total,
+	})
+}
+
+// --- GET /v1/transfers/history ---
+func handleTransferHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	agent, err := resolveAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	limit, _ := strconv.Atoi(e.Request.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset, _ := strconv.Atoi(e.Request.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	type Entry struct {
+		Id             string  `db:"id" json:"id"`
+		FromName       string  `db:"from_name" json:"from"`
+		ToName         string  `db:"to_name" json:"to"`
+		Amount         float64 `db:"amount" json:"amount"`
+		Reason         string  `db:"reason" json:"reason"`
+		IdempotencyKey string  `db:"idempotency_key" json:"idempotency_key"`
+		CreatedAt      string  `db:"created_at" json:"created_at"`
+	}
+
+	var entries []Entry
+	err = app.DB().NewQuery(`
+		SELECT t.id,
+		       fa.name as from_name,
+		       ta.name as to_name,
+		       t.amount, t.reason, t.idempotency_key,
+		       COALESCE(t.created_at, '') as created_at
+		FROM transfers t
+		JOIN agents fa ON fa.id = t.from_agent
+		JOIN agents ta ON ta.id = t.to_agent
+		WHERE t.from_agent = {:agentId} OR t.to_agent = {:agentId}
+		ORDER BY t.created_at DESC
+		LIMIT {:limit} OFFSET {:offset}
+	`).Bind(map[string]any{
+		"agentId": agent.Id,
+		"limit":   limit,
+		"offset":  offset,
+	}).All(&entries)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to query transfer history",
+		})
+	}
+
+	if entries == nil {
+		entries = []Entry{}
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"agent":   agent.GetString("name"),
+		"entries": entries,
+		"limit":   limit,
+		"offset":  offset,
 	})
 }
 

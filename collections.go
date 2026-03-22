@@ -49,6 +49,13 @@ func ensureCollections(app *pocketbase.PocketBase) {
 		migrateAddAgentRelation(app)
 	}
 
+	// Migrations for v2
+	migrateAddAgentType(app)
+	migrateAddTransferId(app)
+
+	// --- transfers collection ---
+	ensureTransfersCollection(app)
+
 	// --- agent_balances view ---
 	ensureAgentBalancesView(app)
 }
@@ -125,6 +132,103 @@ func migrateAddAgentRelation(app *pocketbase.PocketBase) {
 		}
 	}
 	log.Printf("✅ Backfilled agent relation for %d records", len(records))
+}
+
+func migrateAddAgentType(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("agents")
+	if err != nil {
+		return
+	}
+
+	for _, f := range collection.Fields {
+		if f.GetName() == "type" {
+			return
+		}
+	}
+
+	collection.Fields.Add(
+		&core.TextField{Name: "type"},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add type to agents: %v", err)
+	} else {
+		log.Println("✅ Migrated agents: added type field")
+	}
+}
+
+func migrateAddTransferId(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("candy_ledger")
+	if err != nil {
+		return
+	}
+
+	for _, f := range collection.Fields {
+		if f.GetName() == "transfer_id" {
+			return
+		}
+	}
+
+	transfersCol, err := app.FindCollectionByNameOrId("transfers")
+	if err != nil {
+		// transfers collection doesn't exist yet, skip
+		return
+	}
+
+	collection.Fields.Add(
+		&core.RelationField{
+			Name:         "transfer_id",
+			CollectionId: transfersCol.Id,
+			MaxSelect:    1,
+		},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add transfer_id to candy_ledger: %v", err)
+	} else {
+		log.Println("✅ Migrated candy_ledger: added transfer_id field")
+	}
+}
+
+func ensureTransfersCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("transfers"); err == nil {
+		return // already exists
+	}
+
+	agentsCol, err := app.FindCollectionByNameOrId("agents")
+	if err != nil {
+		log.Printf("Warning: agents collection not found, skipping transfers creation")
+		return
+	}
+
+	collection := core.NewBaseCollection("transfers")
+	collection.Fields.Add(
+		&core.RelationField{
+			Name:         "from_agent",
+			CollectionId: agentsCol.Id,
+			MaxSelect:    1,
+			Required:     true,
+		},
+		&core.RelationField{
+			Name:         "to_agent",
+			CollectionId: agentsCol.Id,
+			MaxSelect:    1,
+			Required:     true,
+		},
+		&core.NumberField{Name: "amount", Required: true},
+		&core.TextField{Name: "reason", Required: true},
+		&core.TextField{Name: "idempotency_key", Required: true},
+		&core.AutodateField{Name: "created_at", OnCreate: true},
+	)
+	collection.AddIndex("idx_transfers_from", false, "from_agent", "")
+	collection.AddIndex("idx_transfers_to", false, "to_agent", "")
+	collection.AddIndex("idx_transfers_idempotency", true, "idempotency_key", "")
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create transfers collection: %v", err)
+	} else {
+		log.Println("✅ Created 'transfers' collection")
+	}
 }
 
 func ensureAgentBalancesView(app *pocketbase.PocketBase) {
