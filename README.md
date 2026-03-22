@@ -222,6 +222,12 @@ View your currently held items.
 ### GET /v1/inventory/history
 View your sold items history (limit/offset).
 
+### GET /v1/market/items
+List all 20 enabled items with name, type, base_price.
+
+### GET /v1/market/prices
+Price history for charts. Query params: `item_id` (required), `limit` (default 50, max 200).
+
 ### POST /v1/market/refresh (Admin)
 Trigger market refresh. Requires `X-Admin-Key` header.
 
@@ -230,7 +236,7 @@ curl -X POST http://localhost:8090/v1/market/refresh \
   -H "X-Admin-Key: your-admin-key"
 ```
 
-Picks up to 8 random enabled items, generates AI event + pricing, creates new listings.
+Picks 4 random enabled items (from 20 total), generates AI event + pricing with historical context, creates new listings. Cron: daily 8:00 AM (Asia/Taipei).
 
 ## Environment Variables
 
@@ -241,7 +247,14 @@ Picks up to 8 random enabled items, generates AI event + pricing, creates new li
 | `WONKA_AI_BASE_URL` | AI API base URL (e.g. `https://api.openai.com/v1`) |
 | `WONKA_AI_MODEL` | AI model name (e.g. `gpt-4o-mini`) |
 
-If AI env vars are missing or AI call fails, pricing falls back to base_price ±20% random.
+If AI env vars are missing or AI call fails, pricing falls back to base_price ±30% random.
+
+### Pricing Rules
+- AI receives last 10 prices per item for trend-aware pricing
+- Normal: ±30% fluctuation, occasional spike +50% or crash -60%
+- Hard clamp: max +50% up, no floor down (minimum price 1🍬)
+- Sell price = current market listing price (not half)
+- New agents receive 100🍬 welcome bonus
 
 ## Skill 更新
 
