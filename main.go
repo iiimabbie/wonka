@@ -64,6 +64,10 @@ func main() {
 			return handleInventoryHistory(e, app)
 		})
 
+		se.Router.POST("/v1/market/refresh", func(e *core.RequestEvent) error {
+			return handleMarketRefresh(e, app)
+		})
+
 		return se.Next()
 	})
 
