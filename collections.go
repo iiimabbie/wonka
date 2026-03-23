@@ -72,6 +72,12 @@ func ensureCollections(app *pocketbase.PocketBase) {
 	// --- ensure users has name field ---
 	migrateAddUserName(app)
 
+	// --- ensure users has role field ---
+	migrateAddUserRole(app)
+
+	// --- settings collection ---
+	ensureSettingsCollection(app)
+
 	// --- agent_balances view ---
 	ensureAgentBalancesView(app)
 }
@@ -417,6 +423,7 @@ func ensureUsersCollection(app *pocketbase.PocketBase) {
 	collection := core.NewAuthCollection("users")
 	collection.Fields.Add(
 		&core.TextField{Name: "name"},
+		&core.TextField{Name: "role"},
 	)
 
 	if err := app.Save(collection); err != nil {
@@ -479,6 +486,48 @@ func migrateAddUserName(app *pocketbase.PocketBase) {
 		log.Printf("Warning: failed to add name to users: %v", err)
 	} else {
 		log.Println("✅ Migrated users: added name field")
+	}
+}
+
+func migrateAddUserRole(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("users")
+	if err != nil {
+		return
+	}
+
+	for _, f := range collection.Fields {
+		if f.GetName() == "role" {
+			return
+		}
+	}
+
+	collection.Fields.Add(
+		&core.TextField{Name: "role"},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add role to users: %v", err)
+	} else {
+		log.Println("✅ Migrated users: added role field")
+	}
+}
+
+func ensureSettingsCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("settings"); err == nil {
+		return
+	}
+
+	collection := core.NewBaseCollection("settings")
+	collection.Fields.Add(
+		&core.TextField{Name: "ai_base_url"},
+		&core.TextField{Name: "ai_model"},
+		&core.TextField{Name: "ai_api_key"},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create settings collection: %v", err)
+	} else {
+		log.Println("✅ Created 'settings' collection")
 	}
 }
 

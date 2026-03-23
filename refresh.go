@@ -161,9 +161,7 @@ func pickRandomItems(items []*core.Record, n int) []*core.Record {
 
 // --- AI Pricing ---
 func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[string]float64, string, string, error) {
-	aiKey := os.Getenv("WONKA_AI_API_KEY")
-	aiBaseURL := os.Getenv("WONKA_AI_BASE_URL")
-	aiModel := os.Getenv("WONKA_AI_MODEL")
+	aiBaseURL, aiModel, aiKey := getAIConfig(app)
 
 	if aiKey == "" || aiBaseURL == "" || aiModel == "" {
 		return nil, "", "", fmt.Errorf("AI not configured")
