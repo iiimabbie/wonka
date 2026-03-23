@@ -938,13 +938,12 @@ func handleAgentsList(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		Id      string  `db:"id" json:"id"`
 		Name    string  `db:"name" json:"name"`
 		Enabled bool    `db:"enabled" json:"enabled"`
-		Type    string  `db:"type" json:"type"`
 		Balance float64 `db:"balance" json:"balance"`
 	}
 
 	var agents []AgentEntry
 	err = app.DB().NewQuery(`
-		SELECT a.id, a.name, a.enabled, COALESCE(a.type, '') as type,
+		SELECT a.id, a.name, a.enabled,
 		       COALESCE(SUM(cl.delta), 0) as balance
 		FROM agents a
 		LEFT JOIN candy_ledger cl ON cl.agent_id = a.id
@@ -1117,7 +1116,6 @@ func handleAdminAgents(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		Id        string  `db:"id" json:"id"`
 		Name      string  `db:"name" json:"name"`
 		Enabled   bool    `db:"enabled" json:"enabled"`
-		Type      string  `db:"type" json:"type"`
 		Balance   float64 `db:"balance" json:"balance"`
 		OwnerId  string  `db:"owner_id" json:"owner_id"`
 		OwnerEmail string `db:"owner_email" json:"owner_email"`
@@ -1125,7 +1123,7 @@ func handleAdminAgents(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 
 	var agents []AgentEntry
 	err := app.DB().NewQuery(`
-		SELECT a.id, a.name, a.enabled, COALESCE(a.type, '') as type,
+		SELECT a.id, a.name, a.enabled,
 		       COALESCE(SUM(cl.delta), 0) as balance,
 		       COALESCE(a.owner, '') as owner_id,
 		       COALESCE(u.email, '') as owner_email
@@ -1188,7 +1186,6 @@ func handleAdminPatchAgent(e *core.RequestEvent, app *pocketbase.PocketBase) err
 		"id":      agent.Id,
 		"name":    agent.GetString("name"),
 		"enabled": agent.GetBool("enabled"),
-		"type":    agent.GetString("type"),
 	})
 }
 
