@@ -359,7 +359,7 @@ func handleLeaderboard(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		SELECT a.name, COALESCE(SUM(cl.delta), 0) as balance
 		FROM agents a
 		LEFT JOIN candy_ledger cl ON cl.agent_id = a.id
-		WHERE a.enabled = true
+		WHERE a.enabled = true AND LOWER(a.name) NOT LIKE '%test%'
 		GROUP BY a.id, a.name
 		ORDER BY balance DESC
 	`).All(&entries)
