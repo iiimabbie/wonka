@@ -119,6 +119,10 @@ func main() {
 			return handleAgentHistory(e, app)
 		})
 
+		se.Router.POST("/v1/agents/{agentId}/regenerate-key", func(e *core.RequestEvent) error {
+			return handleRegenerateKey(e, app)
+		})
+
 		// --- Admin routes ---
 		se.Router.GET("/v1/admin/agents", func(e *core.RequestEvent) error {
 			return handleAdminAgents(e, app)
@@ -138,6 +142,10 @@ func main() {
 
 		se.Router.POST("/v1/admin/adjust", func(e *core.RequestEvent) error {
 			return handleAdminAdjust(e, app)
+		})
+
+		se.Router.POST("/v1/admin/agents/{agentId}/regenerate-key", func(e *core.RequestEvent) error {
+			return handleAdminRegenerateKey(e, app)
 		})
 
 		se.Router.POST("/v1/admin/market/refresh", func(e *core.RequestEvent) error {
@@ -1480,6 +1488,59 @@ func getAIConfig(app *pocketbase.PocketBase) (baseURL, model, apiKey string) {
 		apiKey = os.Getenv("WONKA_AI_API_KEY")
 	}
 	return
+}
+
+// --- POST /v1/agents/{agentId}/regenerate-key (owner) ---
+func handleRegenerateKey(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	_, agent, err := resolveOwnedAgent(e, app)
+	if err != nil {
+		return err
+	}
+
+	return doRegenerateKey(e, app, agent)
+}
+
+// --- POST /v1/admin/agents/{agentId}/regenerate-key ---
+func handleAdminRegenerateKey(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	agentId := e.Request.PathValue("agentId")
+	agent, err := app.FindRecordById("agents", agentId)
+	if err != nil {
+		return e.JSON(http.StatusNotFound, map[string]string{
+			"error": "agent not found",
+		})
+	}
+
+	return doRegenerateKey(e, app, agent)
+}
+
+func doRegenerateKey(e *core.RequestEvent, app *pocketbase.PocketBase, agent *core.Record) error {
+	keyBytes := make([]byte, 24)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to generate API key",
+		})
+	}
+	apiKey := "wonka-" + hex.EncodeToString(keyBytes)
+
+	hash := sha256.Sum256([]byte(apiKey))
+	keyHash := hex.EncodeToString(hash[:])
+
+	agent.Set("key_hash", keyHash)
+	if err := app.Save(agent); err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to update agent key",
+		})
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"status":  "ok",
+		"agent":   agent.GetString("name"),
+		"api_key": apiKey,
+	})
 }
 
 // --- GET /v1/agents/{agentId}/history ---
