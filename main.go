@@ -1365,7 +1365,7 @@ func handleAdminMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) 
 		return err
 	}
 
-	return handleMarketRefresh(e, app)
+	return doMarketRefresh(e, app)
 }
 
 // --- GET /v1/admin/settings ---

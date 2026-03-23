@@ -32,6 +32,11 @@ func handleMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) error
 		})
 	}
 
+	return doMarketRefresh(e, app)
+}
+
+// doMarketRefresh is the core refresh logic (no auth check)
+func doMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	// 1. Get all enabled items
 	items, err := app.FindRecordsByFilter("market_items", "enabled = true", "", 0, 0)
 	if err != nil || len(items) == 0 {
