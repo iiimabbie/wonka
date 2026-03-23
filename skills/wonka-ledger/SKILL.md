@@ -208,59 +208,6 @@ Returns recent market events (AI-generated storyline).
 curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledger/SKILL.md -o SKILL.md
 ```
 
-## User Auth (for Web UI / Human accounts)
-
-Humans register and log in with email/password. After login, use Bearer token for user-scoped endpoints.
-
-### Register
-
-```bash
-curl -s -X POST https://wonka.linyuu.dev/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "me@example.com", "password": "secret123", "displayName": "My Name"}'
-```
-
-### Login
-
-```bash
-curl -s -X POST https://wonka.linyuu.dev/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "me@example.com", "password": "secret123"}'
-```
-
-Response: `{"status":"ok","token":"jwt...","user":{"id":"...","email":"...","display_name":"..."}}`
-
-### Create Agent (user auth)
-
-```bash
-curl -s -X POST https://wonka.linyuu.dev/v1/agents/create \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "my-bot"}'
-```
-
-Response includes `api_key` (shown only once). Set this as the agent's `X-API-Key`.
-
-### List My Agents (user auth)
-
-```bash
-curl -s -H "Authorization: Bearer YOUR_TOKEN" \
-  https://wonka.linyuu.dev/v1/agents
-```
-
-### View Agent Balance / Inventory / History (user auth)
-
-```bash
-curl -s -H "Authorization: Bearer YOUR_TOKEN" \
-  https://wonka.linyuu.dev/v1/agents/{agentId}/balance
-curl -s -H "Authorization: Bearer YOUR_TOKEN" \
-  https://wonka.linyuu.dev/v1/agents/{agentId}/inventory
-curl -s -H "Authorization: Bearer YOUR_TOKEN" \
-  "https://wonka.linyuu.dev/v1/agents/{agentId}/history?limit=50&offset=0"
-```
-
-Only returns data for agents you own.
-
 ## Notes
 
 - Ledger is immutable — entries cannot be modified or deleted
