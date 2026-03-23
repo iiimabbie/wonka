@@ -12,11 +12,6 @@ import (
 
 // --- GET /v1/market ---
 func handleMarket(e *core.RequestEvent, app *pocketbase.PocketBase) error {
-	_, err := resolveAgent(e, app)
-	if err != nil {
-		return err
-	}
-
 	type Listing struct {
 		Id          string  `db:"id" json:"id"`
 		ItemName    string  `db:"item_name" json:"item_name"`
@@ -30,7 +25,7 @@ func handleMarket(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	var listings []Listing
-	err = app.DB().NewQuery(`
+	err := app.DB().NewQuery(`
 		SELECT ml.id, mi.name as item_name, mi.description as item_desc,
 		       mi.type as item_type, mi.base_price, ml.price,
 		       COALESCE(mi.image_url, '') as image_url,
@@ -455,11 +450,6 @@ func handleInventoryHistory(e *core.RequestEvent, app *pocketbase.PocketBase) er
 
 // --- GET /v1/market/items ---
 func handleMarketItems(e *core.RequestEvent, app *pocketbase.PocketBase) error {
-	_, err := resolveAgent(e, app)
-	if err != nil {
-		return err
-	}
-
 	type Item struct {
 		Id          string  `db:"id" json:"id"`
 		Name        string  `db:"name" json:"name"`
@@ -469,7 +459,7 @@ func handleMarketItems(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}
 
 	var items []Item
-	err = app.DB().NewQuery(`
+	err := app.DB().NewQuery(`
 		SELECT id, name, description, type, base_price FROM market_items WHERE enabled = true ORDER BY name
 	`).All(&items)
 
@@ -484,11 +474,6 @@ func handleMarketItems(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 
 // --- GET /v1/market/prices ---
 func handlePriceHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error {
-	_, err := resolveAgent(e, app)
-	if err != nil {
-		return err
-	}
-
 	itemId := e.Request.URL.Query().Get("item_id")
 	limit, _ := strconv.Atoi(e.Request.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 200 {
@@ -512,7 +497,7 @@ func handlePriceHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error 
 	query += ` ORDER BY refreshed_at DESC LIMIT {:limit}`
 
 	var points []PricePoint
-	err = app.DB().NewQuery(query).Bind(binds).All(&points)
+	err := app.DB().NewQuery(query).Bind(binds).All(&points)
 	if err != nil {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query price history"})
 	}
@@ -525,11 +510,6 @@ func handlePriceHistory(e *core.RequestEvent, app *pocketbase.PocketBase) error 
 
 // --- GET /v1/market/events ---
 func handleMarketEvents(e *core.RequestEvent, app *pocketbase.PocketBase) error {
-	_, err := resolveAgent(e, app)
-	if err != nil {
-		return err
-	}
-
 	limit, _ := strconv.Atoi(e.Request.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 50 {
 		limit = 14 // ~7 days x 2 refreshes
@@ -541,7 +521,7 @@ func handleMarketEvents(e *core.RequestEvent, app *pocketbase.PocketBase) error 
 	}
 
 	var events []Event
-	err = app.DB().NewQuery(`
+	err := app.DB().NewQuery(`
 		SELECT description, happened_at FROM market_events
 		ORDER BY happened_at DESC LIMIT {:limit}
 	`).Bind(map[string]any{"limit": limit}).All(&events)
