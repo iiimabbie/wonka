@@ -63,6 +63,12 @@ func ensureCollections(app *pocketbase.PocketBase) {
 	ensureMarketPriceHistoryCollection(app)
 	ensureMarketEventsCollection(app)
 
+	// --- users auth collection ---
+	ensureUsersCollection(app)
+
+	// --- owner field on agents ---
+	migrateAddAgentOwner(app)
+
 	// --- agent_balances view ---
 	ensureAgentBalancesView(app)
 }
@@ -397,6 +403,56 @@ func ensureMarketEventsCollection(app *pocketbase.PocketBase) {
 		log.Printf("Warning: failed to create market_events collection: %v", err)
 	} else {
 		log.Println("✅ Created 'market_events' collection")
+	}
+}
+
+func ensureUsersCollection(app *pocketbase.PocketBase) {
+	if _, err := app.FindCollectionByNameOrId("users"); err == nil {
+		return
+	}
+
+	collection := core.NewAuthCollection("users")
+	collection.Fields.Add(
+		&core.TextField{Name: "display_name"},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to create users collection: %v", err)
+	} else {
+		log.Println("✅ Created 'users' auth collection")
+	}
+}
+
+func migrateAddAgentOwner(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("agents")
+	if err != nil {
+		return
+	}
+
+	for _, f := range collection.Fields {
+		if f.GetName() == "owner" {
+			return
+		}
+	}
+
+	usersCol, err := app.FindCollectionByNameOrId("users")
+	if err != nil {
+		log.Printf("Warning: users collection not found, skipping owner migration")
+		return
+	}
+
+	collection.Fields.Add(
+		&core.RelationField{
+			Name:         "owner",
+			CollectionId: usersCol.Id,
+			MaxSelect:    1,
+		},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add owner to agents: %v", err)
+	} else {
+		log.Println("✅ Migrated agents: added owner relation field")
 	}
 }
 
