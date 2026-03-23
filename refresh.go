@@ -251,7 +251,7 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 		"max_tokens":  500,
 	})
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	req, _ := http.NewRequest("POST", aiBaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+aiKey)
