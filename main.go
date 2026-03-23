@@ -710,7 +710,7 @@ func handleRegister(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	var body struct {
 		Email       string `json:"email"`
 		Password    string `json:"password"`
-		DisplayName string `json:"displayName"`
+		Name     string `json:"name"`
 	}
 
 	if err := e.BindBody(&body); err != nil {
@@ -742,8 +742,8 @@ func handleRegister(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	record := core.NewRecord(collection)
 	record.SetEmail(body.Email)
 	record.SetPassword(body.Password)
-	if body.DisplayName != "" {
-		record.Set("display_name", body.DisplayName)
+	if body.Name != "" {
+		record.Set("name", body.Name)
 	}
 
 	if err := app.Save(record); err != nil {
@@ -803,7 +803,7 @@ func handleLogin(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		"user": map[string]any{
 			"id":           record.Id,
 			"email":        record.Email(),
-			"display_name": record.GetString("display_name"),
+			"name": record.GetString("name"),
 		},
 	})
 }
@@ -940,7 +940,7 @@ func handleUserProfile(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	return e.JSON(http.StatusOK, map[string]any{
 		"id":           user.Id,
 		"email":        user.Email(),
-		"display_name": user.GetString("display_name"),
+		"name": user.GetString("name"),
 		"agent_count":  result.Count,
 	})
 }

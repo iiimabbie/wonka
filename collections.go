@@ -412,9 +412,7 @@ func ensureUsersCollection(app *pocketbase.PocketBase) {
 	}
 
 	collection := core.NewAuthCollection("users")
-	collection.Fields.Add(
-		&core.TextField{Name: "display_name"},
-	)
+	// PocketBase auth collection already has 'name' field built-in, no extra fields needed
 
 	if err := app.Save(collection); err != nil {
 		log.Printf("Warning: failed to create users collection: %v", err)
