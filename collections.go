@@ -69,6 +69,9 @@ func ensureCollections(app *pocketbase.PocketBase) {
 	// --- owner field on agents ---
 	migrateAddAgentOwner(app)
 
+	// --- ensure users has name field ---
+	migrateAddUserName(app)
+
 	// --- agent_balances view ---
 	ensureAgentBalancesView(app)
 }
@@ -412,7 +415,9 @@ func ensureUsersCollection(app *pocketbase.PocketBase) {
 	}
 
 	collection := core.NewAuthCollection("users")
-	// PocketBase auth collection already has 'name' field built-in, no extra fields needed
+	collection.Fields.Add(
+		&core.TextField{Name: "name"},
+	)
 
 	if err := app.Save(collection); err != nil {
 		log.Printf("Warning: failed to create users collection: %v", err)
@@ -451,6 +456,29 @@ func migrateAddAgentOwner(app *pocketbase.PocketBase) {
 		log.Printf("Warning: failed to add owner to agents: %v", err)
 	} else {
 		log.Println("✅ Migrated agents: added owner relation field")
+	}
+}
+
+func migrateAddUserName(app *pocketbase.PocketBase) {
+	collection, err := app.FindCollectionByNameOrId("users")
+	if err != nil {
+		return
+	}
+
+	for _, f := range collection.Fields {
+		if f.GetName() == "name" {
+			return
+		}
+	}
+
+	collection.Fields.Add(
+		&core.TextField{Name: "name"},
+	)
+
+	if err := app.Save(collection); err != nil {
+		log.Printf("Warning: failed to add name to users: %v", err)
+	} else {
+		log.Println("✅ Migrated users: added name field")
 	}
 }
 
