@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
@@ -115,6 +117,39 @@ func main() {
 
 		se.Router.GET("/v1/agents/{agentId}/history", func(e *core.RequestEvent) error {
 			return handleAgentHistory(e, app)
+		})
+
+		// --- Admin routes ---
+		se.Router.GET("/v1/admin/agents", func(e *core.RequestEvent) error {
+			return handleAdminAgents(e, app)
+		})
+
+		se.Router.PATCH("/v1/admin/agents/{agentId}", func(e *core.RequestEvent) error {
+			return handleAdminPatchAgent(e, app)
+		})
+
+		se.Router.GET("/v1/admin/users", func(e *core.RequestEvent) error {
+			return handleAdminUsers(e, app)
+		})
+
+		se.Router.DELETE("/v1/admin/users/{userId}", func(e *core.RequestEvent) error {
+			return handleAdminDeleteUser(e, app)
+		})
+
+		se.Router.POST("/v1/admin/adjust", func(e *core.RequestEvent) error {
+			return handleAdminAdjust(e, app)
+		})
+
+		se.Router.POST("/v1/admin/market/refresh", func(e *core.RequestEvent) error {
+			return handleAdminMarketRefresh(e, app)
+		})
+
+		se.Router.GET("/v1/admin/settings", func(e *core.RequestEvent) error {
+			return handleAdminGetSettings(e, app)
+		})
+
+		se.Router.PUT("/v1/admin/settings", func(e *core.RequestEvent) error {
+			return handleAdminPutSettings(e, app)
 		})
 
 		return se.Next()
@@ -725,6 +760,12 @@ func handleRegister(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		})
 	}
 
+	if len(body.Password) < 8 {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "password must be at least 8 characters",
+		})
+	}
+
 	existing, _ := app.FindAuthRecordByEmail("users", body.Email)
 	if existing != nil {
 		return e.JSON(http.StatusConflict, map[string]string{
@@ -801,9 +842,10 @@ func handleLogin(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 		"status": "ok",
 		"token":  token,
 		"user": map[string]any{
-			"id":           record.Id,
-			"email":        record.Email(),
-			"name": record.GetString("name"),
+			"id":    record.Id,
+			"email": record.Email(),
+			"name":  record.GetString("name"),
+			"role":  record.GetString("role"),
 		},
 	})
 }
@@ -938,10 +980,11 @@ func handleUserProfile(e *core.RequestEvent, app *pocketbase.PocketBase) error {
 	}).One(&result)
 
 	return e.JSON(http.StatusOK, map[string]any{
-		"id":           user.Id,
-		"email":        user.Email(),
-		"name": user.GetString("name"),
-		"agent_count":  result.Count,
+		"id":          user.Id,
+		"email":       user.Email(),
+		"name":        user.GetString("name"),
+		"role":        user.GetString("role"),
+		"agent_count": result.Count,
 	})
 }
 
@@ -1038,6 +1081,405 @@ func handleAgentInventory(e *core.RequestEvent, app *pocketbase.PocketBase) erro
 		"agent": agent.GetString("name"),
 		"items": items,
 	})
+}
+
+// --- Admin auth helper ---
+func resolveAdmin(e *core.RequestEvent, app *pocketbase.PocketBase) (*core.Record, error) {
+	record, err := resolveUser(e, app)
+	if err != nil {
+		return nil, err
+	}
+
+	if record.GetString("role") != "admin" {
+		return nil, e.JSON(http.StatusForbidden, map[string]string{
+			"error": "admin access required",
+		})
+	}
+
+	return record, nil
+}
+
+// --- GET /v1/admin/agents ---
+func handleAdminAgents(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	type AgentEntry struct {
+		Id        string  `db:"id" json:"id"`
+		Name      string  `db:"name" json:"name"`
+		Enabled   bool    `db:"enabled" json:"enabled"`
+		Type      string  `db:"type" json:"type"`
+		Balance   float64 `db:"balance" json:"balance"`
+		OwnerId  string  `db:"owner_id" json:"owner_id"`
+		OwnerEmail string `db:"owner_email" json:"owner_email"`
+	}
+
+	var agents []AgentEntry
+	err := app.DB().NewQuery(`
+		SELECT a.id, a.name, a.enabled, COALESCE(a.type, '') as type,
+		       COALESCE(SUM(cl.delta), 0) as balance,
+		       COALESCE(a.owner, '') as owner_id,
+		       COALESCE(u.email, '') as owner_email
+		FROM agents a
+		LEFT JOIN candy_ledger cl ON cl.agent_id = a.id
+		LEFT JOIN users u ON u.id = a.owner
+		GROUP BY a.id
+		ORDER BY a.name
+	`).All(&agents)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to query agents",
+		})
+	}
+
+	if agents == nil {
+		agents = []AgentEntry{}
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"agents": agents,
+	})
+}
+
+// --- PATCH /v1/admin/agents/{agentId} ---
+func handleAdminPatchAgent(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	agentId := e.Request.PathValue("agentId")
+	agent, err := app.FindRecordById("agents", agentId)
+	if err != nil {
+		return e.JSON(http.StatusNotFound, map[string]string{
+			"error": "agent not found",
+		})
+	}
+
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := e.BindBody(&body); err != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+	}
+
+	if body.Enabled != nil {
+		agent.Set("enabled", *body.Enabled)
+	}
+
+	if err := app.Save(agent); err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to update agent",
+		})
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"id":      agent.Id,
+		"name":    agent.GetString("name"),
+		"enabled": agent.GetBool("enabled"),
+		"type":    agent.GetString("type"),
+	})
+}
+
+// --- GET /v1/admin/users ---
+func handleAdminUsers(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	type UserEntry struct {
+		Id         string `db:"id" json:"id"`
+		Email      string `db:"email" json:"email"`
+		Name       string `db:"name" json:"name"`
+		Role       string `db:"role" json:"role"`
+		AgentCount int    `db:"agent_count" json:"agent_count"`
+	}
+
+	var users []UserEntry
+	err := app.DB().NewQuery(`
+		SELECT u.id, u.email, COALESCE(u.name, '') as name,
+		       COALESCE(u.role, '') as role,
+		       COUNT(a.id) as agent_count
+		FROM users u
+		LEFT JOIN agents a ON a.owner = u.id
+		GROUP BY u.id
+		ORDER BY u.email
+	`).All(&users)
+
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to query users",
+		})
+	}
+
+	if users == nil {
+		users = []UserEntry{}
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"users": users,
+	})
+}
+
+// --- DELETE /v1/admin/users/{userId} ---
+func handleAdminDeleteUser(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	admin, err := resolveAdmin(e, app)
+	if err != nil {
+		return err
+	}
+
+	userId := e.Request.PathValue("userId")
+	if userId == admin.Id {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "cannot delete yourself",
+		})
+	}
+
+	user, err := app.FindRecordById("users", userId)
+	if err != nil {
+		return e.JSON(http.StatusNotFound, map[string]string{
+			"error": "user not found",
+		})
+	}
+
+	// Unbind agents owned by this user
+	agents, _ := app.FindRecordsByFilter("agents", "owner = {:userId}", "", 0, 0, map[string]any{
+		"userId": userId,
+	})
+	for _, agent := range agents {
+		agent.Set("owner", "")
+		_ = app.Save(agent)
+	}
+
+	if err := app.Delete(user); err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to delete user",
+		})
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"status":          "ok",
+		"deleted_user_id": userId,
+		"unbound_agents":  len(agents),
+	})
+}
+
+// --- POST /v1/admin/adjust ---
+func handleAdminAdjust(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	var body struct {
+		AgentId string  `json:"agent_id"`
+		Delta   float64 `json:"delta"`
+		Reason  string  `json:"reason"`
+	}
+
+	if err := e.BindBody(&body); err != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+	}
+
+	if body.AgentId == "" {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "agent_id is required",
+		})
+	}
+	if body.Delta == 0 {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "delta cannot be zero",
+		})
+	}
+	if body.Reason == "" {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "reason is required",
+		})
+	}
+
+	agent, err := app.FindRecordById("agents", body.AgentId)
+	if err != nil {
+		// Try by name
+		agent, err = app.FindFirstRecordByFilter("agents", "name = {:name}", map[string]any{
+			"name": body.AgentId,
+		})
+		if err != nil {
+			return e.JSON(http.StatusNotFound, map[string]string{
+				"error": "agent not found",
+			})
+		}
+	}
+
+	// Generate idempotency key
+	randBytes := make([]byte, 8)
+	_, _ = rand.Read(randBytes)
+	idempotencyKey := fmt.Sprintf("admin-%d-%s", time.Now().UnixMilli(), hex.EncodeToString(randBytes))
+
+	collection, err := app.FindCollectionByNameOrId("candy_ledger")
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "candy_ledger collection not found",
+		})
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("agent_id", agent.Id)
+	record.Set("agent", agent.Id)
+	record.Set("delta", body.Delta)
+	record.Set("reason", body.Reason)
+	record.Set("idempotency_key", idempotencyKey)
+
+	if err := app.Save(record); err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to save ledger entry",
+		})
+	}
+
+	// Get new balance
+	type Result struct {
+		Total float64 `db:"total"`
+	}
+	var result Result
+	_ = app.DB().NewQuery(`
+		SELECT COALESCE(SUM(delta), 0) as total
+		FROM candy_ledger WHERE agent_id = {:agentId}
+	`).Bind(map[string]any{"agentId": agent.Id}).One(&result)
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"status":      "ok",
+		"id":          record.Id,
+		"agent":       agent.GetString("name"),
+		"delta":       body.Delta,
+		"reason":      body.Reason,
+		"new_balance": result.Total,
+	})
+}
+
+// --- POST /v1/admin/market/refresh ---
+func handleAdminMarketRefresh(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	return handleMarketRefresh(e, app)
+}
+
+// --- GET /v1/admin/settings ---
+func handleAdminGetSettings(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	aiBaseURL, aiModel, aiKeySet := resolveAISettings(app)
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"ai_base_url": aiBaseURL,
+		"ai_model":    aiModel,
+		"ai_key_set":  aiKeySet,
+	})
+}
+
+// --- PUT /v1/admin/settings ---
+func handleAdminPutSettings(e *core.RequestEvent, app *pocketbase.PocketBase) error {
+	if _, err := resolveAdmin(e, app); err != nil {
+		return err
+	}
+
+	var body struct {
+		AIBaseURL string `json:"ai_base_url"`
+		AIModel   string `json:"ai_model"`
+		AIApiKey  string `json:"ai_api_key"`
+	}
+
+	if err := e.BindBody(&body); err != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+	}
+
+	// Find or create settings record
+	record, err := app.FindFirstRecordByFilter("settings", "1=1", nil)
+	if err != nil {
+		col, colErr := app.FindCollectionByNameOrId("settings")
+		if colErr != nil {
+			return e.JSON(http.StatusInternalServerError, map[string]string{
+				"error": "settings collection not found",
+			})
+		}
+		record = core.NewRecord(col)
+	}
+
+	record.Set("ai_base_url", body.AIBaseURL)
+	record.Set("ai_model", body.AIModel)
+	record.Set("ai_api_key", body.AIApiKey)
+
+	if err := app.Save(record); err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to save settings",
+		})
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"status":      "ok",
+		"ai_base_url": body.AIBaseURL,
+		"ai_model":    body.AIModel,
+		"ai_key_set":  body.AIApiKey != "",
+	})
+}
+
+// resolveAISettings returns AI config from settings collection, falling back to env vars
+func resolveAISettings(app *pocketbase.PocketBase) (baseURL string, model string, keySet bool) {
+	// Try settings collection first
+	record, err := app.FindFirstRecordByFilter("settings", "1=1", nil)
+	if err == nil {
+		baseURL = record.GetString("ai_base_url")
+		model = record.GetString("ai_model")
+		key := record.GetString("ai_api_key")
+		if baseURL != "" && model != "" && key != "" {
+			return baseURL, model, true
+		}
+	}
+
+	// Fall back to env
+	if baseURL == "" {
+		baseURL = os.Getenv("WONKA_AI_BASE_URL")
+	}
+	if model == "" {
+		model = os.Getenv("WONKA_AI_MODEL")
+	}
+	keySet = os.Getenv("WONKA_AI_API_KEY") != ""
+	if record != nil && record.GetString("ai_api_key") != "" {
+		keySet = true
+	}
+	return
+}
+
+// getAIConfig returns full AI config (including key) for making API calls
+func getAIConfig(app *pocketbase.PocketBase) (baseURL, model, apiKey string) {
+	record, err := app.FindFirstRecordByFilter("settings", "1=1", nil)
+	if err == nil {
+		baseURL = record.GetString("ai_base_url")
+		model = record.GetString("ai_model")
+		apiKey = record.GetString("ai_api_key")
+		if baseURL != "" && model != "" && apiKey != "" {
+			return
+		}
+	}
+
+	if baseURL == "" {
+		baseURL = os.Getenv("WONKA_AI_BASE_URL")
+	}
+	if model == "" {
+		model = os.Getenv("WONKA_AI_MODEL")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("WONKA_AI_API_KEY")
+	}
+	return
 }
 
 // --- GET /v1/agents/{agentId}/history ---
