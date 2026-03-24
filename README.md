@@ -1,6 +1,6 @@
 # 🍬 Wonka — Candy Ledger System
 
-A lightweight candy point tracking system built on [PocketBase](https://pocketbase.io/).
+A lightweight candy point tracking system built on **Echo v5 + PostgreSQL**.
 
 Each agent gets an API key and can only query/modify their own candy balance.
 
@@ -8,311 +8,130 @@ Each agent gets an API key and can only query/modify their own candy balance.
 
 - **Immutable ledger** — entries can never be modified or deleted
 - **Idempotency** — duplicate requests are safely ignored
-- **RBAC by API key** — agents can only access their own data
-- **O(1) balance queries** — no need to parse markdown files
+- **RBAC** — agent-key auth for candy ops, JWT auth for user/admin ops
+- **Market system** — 12 items, AI-driven pricing on every refresh
+- **PostgreSQL** — pgxpool + golang-migrate, no ORM
 
 ## Quick Start
 
 ```bash
-# Build
-go build -o wonka .
+# Docker (recommended)
+docker compose up -d
 
-# Run (starts on :8090 by default)
-./wonka serve
+# Required env vars
+DATABASE_URL=postgres://...
+JWT_SECRET=your-secret
+WONKA_ADMIN_KEY=your-admin-key
+WONKA_AI_BASE_URL=https://api.openai.com/v1  # optional
+WONKA_AI_MODEL=gpt-4o-mini                   # optional
+WONKA_AI_API_KEY=sk-...                      # optional
 ```
 
-## Agent Setup
+## Auth
 
-Each agent stores its API key in its own workspace directory:
-
-```bash
-mkdir -p .config/wonka
-echo "your-secret-key" > .config/wonka/api_key
-```
-
-> Key is stored at `{workspace}/.config/wonka/api_key` (relative to agent workspace).
-> This allows multiple agents on the same host to each use their own key.
+| Route group | Auth method |
+|-------------|-------------|
+| `/v1/candies/*`, `/v1/market/buy`, `/v1/market/sell`, `/v1/inventory/*`, `/v1/candies/transfer`, `/v1/transfers/*` | `Authorization: Bearer <api-key>` |
+| `/v1/auth/*` | Public |
+| `/v1/candies/leaderboard`, `/v1/market`, `/v1/market/items`, `/v1/market/prices`, `/v1/market/events` | Public |
+| `/v1/agents/*`, `/v1/user/*` | `Authorization: Bearer <jwt>` |
+| `/v1/admin/*` | JWT + admin role |
+| `/v1/market/refresh` | `X-Admin-Key` header |
 
 ## API
 
-### GET /v1/candies/balance
-Query your current candy balance.
-
+### Auth
 ```bash
-curl -H "X-API-Key: your-key" http://localhost:8090/v1/candies/balance
+POST /v1/auth/register   {"email","password","name"}
+POST /v1/auth/login      {"email","password"}  → {token, user}
 ```
 
-Response:
-```json
-{
-  "agent": "rafain",
-  "balance": 42,
-  "last_mod": "2026-03-19 12:00:00.000Z"
-}
-```
-
-### POST /v1/candies/adjust
-Add or subtract candies.
-
+### Candy (agent-key)
 ```bash
-curl -X POST http://localhost:8090/v1/candies/adjust \
-  -H "X-API-Key: your-key" \
-  -H "Content-Type: application/json" \
-  -d '{"delta": 5, "reason": "completed task", "idempotencyKey": "task-123"}'
+GET  /v1/candies/balance
+POST /v1/candies/adjust      {"delta","reason","idempotencyKey"}
+GET  /v1/candies/history
+GET  /v1/candies/summary     # 本週統計
+GET  /v1/candies/leaderboard # public，隱藏 test 開頭 agent
+POST /v1/candies/transfer    {"to","amount","reason","idempotencyKey"}
+GET  /v1/transfers/history
 ```
 
-Response:
-```json
-{
-  "status": "ok",
-  "id": "abc123",
-  "delta": 5,
-  "reason": "completed task",
-  "new_balance": 47
-}
-```
-
-### GET /v1/candies/history
-View your candy transaction history.
-
+### Market (public)
 ```bash
-curl -H "X-API-Key: your-key" "http://localhost:8090/v1/candies/history?limit=20&offset=0"
+GET  /v1/market              # 目前 listings + 最新事件
+GET  /v1/market/items        # 所有啟用物品
+GET  /v1/market/prices?item_id=&limit=  # 價格走勢
+GET  /v1/market/events?limit=
 ```
 
-Response:
-```json
-{
-  "agent": "rafain",
-  "entries": [
-    {
-      "id": "abc123",
-      "agent_name": "rafain",
-      "delta": 5,
-      "reason": "completed task",
-      "idempotency_key": "task-123",
-      "created_at": "2026-03-19 12:00:00.000Z"
-    }
-  ],
-  "limit": 20,
-  "offset": 0
-}
-```
-
-### GET /v1/candies/leaderboard
-查看所有 agent 的糖果餘額排行（需要有效 API key）。
-
+### Market (agent-key)
 ```bash
-curl -H "X-API-Key: your-key" http://localhost:8090/v1/candies/leaderboard
+POST /v1/market/buy   {"listing_id","idempotencyKey"}
+POST /v1/market/sell  {"inventory_id","idempotencyKey"}
+GET  /v1/inventory
+GET  /v1/inventory/history?limit=&offset=
 ```
 
-Response:
-```json
-{
-  "leaderboard": [
-    {"name": "Ani", "balance": 17},
-    {"name": "Rafain", "balance": 12}
-  ]
-}
-```
-
-### GET /v1/candies/summary
-查看自己本週的糖果得失統計 + 當前餘額。
-
+### Market Refresh (X-Admin-Key)
 ```bash
-curl -H "X-API-Key: your-key" http://localhost:8090/v1/candies/summary
+POST /v1/market/refresh
 ```
+刷新全部 12 件物品。AI 根據事件 + 近期購買量定價，失敗時 fallback random ±30%。
 
-Response:
-```json
-{
-  "agent": "rafain",
-  "balance": 12,
-  "week_earned": 3,
-  "week_spent": -2,
-  "week_net": 1
-}
-```
-
-- `week_earned`: 本週獲得糖果總計
-- `week_spent`: 本週扣除糖果總計（負數）
-- `week_net`: 本週淨增減
-
-### POST /v1/candies/transfer
-Transfer candies to another agent. Cannot overdraft.
-
+### User / Agent (JWT)
 ```bash
-curl -X POST http://localhost:8090/v1/candies/transfer \
-  -H "X-API-Key: your-key" \
-  -H "Content-Type: application/json" \
-  -d '{"to_agent": "ani", "amount": 3, "reason": "thanks", "idempotencyKey": "tf-001"}'
+POST /v1/agents/create              {"name"}  → {id,name,api_key}
+GET  /v1/agents
+GET  /v1/user/profile
+GET  /v1/agents/:id/balance
+GET  /v1/agents/:id/inventory
+GET  /v1/agents/:id/history
+POST /v1/agents/:id/regenerate-key
 ```
 
-Response:
-```json
-{
-  "status": "ok",
-  "from": "rafain",
-  "to": "ani",
-  "amount": 3,
-  "from_new_balance": 8,
-  "to_new_balance": 20,
-  "reason": "thanks"
-}
-```
-
-Guards: insufficient balance, self-transfer, unknown/disabled agent, duplicate idempotency key, missing fields, amount ≤ 0.
-
-### GET /v1/transfers/history
-View your transfer history (sent and received).
-
+### Admin (JWT + admin role)
 ```bash
-curl -H "X-API-Key: your-key" "http://localhost:8090/v1/transfers/history?limit=20&offset=0"
+GET    /v1/admin/agents
+PATCH  /v1/admin/agents/:id         {"enabled"}
+GET    /v1/admin/users
+DELETE /v1/admin/users/:id
+POST   /v1/admin/adjust             {"agent_id","delta","reason"}  # by UUID or name
+POST   /v1/admin/agents/:id/regenerate-key
+POST   /v1/admin/market/refresh
+GET    /v1/admin/settings
+PUT    /v1/admin/settings           {"ai_base_url","ai_model","ai_api_key"}
 ```
-
-Response:
-```json
-{
-  "agent": "rafain",
-  "entries": [
-    {
-      "id": "abc",
-      "from": "rafain",
-      "to": "ani",
-      "amount": 3,
-      "reason": "thanks",
-      "idempotency_key": "tf-001",
-      "created_at": "2026-03-22 15:00:00.000Z"
-    }
-  ],
-  "limit": 20,
-  "offset": 0
-}
-```
-
-### GET /v1/market
-View currently active market listings and latest event.
-
-```bash
-curl -H "X-API-Key: your-key" http://localhost:8090/v1/market
-```
-
-### POST /v1/market/buy
-Buy an item from the market.
-
-```bash
-curl -X POST http://localhost:8090/v1/market/buy \
-  -H "X-API-Key: your-key" \
-  -H "Content-Type: application/json" \
-  -d '{"listing_id": "abc123", "idempotencyKey": "buy-001"}'
-```
-
-### POST /v1/market/sell
-Sell an inventory item at half price.
-
-```bash
-curl -X POST http://localhost:8090/v1/market/sell \
-  -H "X-API-Key: your-key" \
-  -H "Content-Type: application/json" \
-  -d '{"inventory_id": "xyz789", "idempotencyKey": "sell-001"}'
-```
-
-### GET /v1/inventory
-View your currently held items.
-
-### GET /v1/inventory/history
-View your sold items history (limit/offset).
-
-### GET /v1/market/items
-List all 20 enabled items with name, type, base_price.
-
-### GET /v1/market/prices
-Price history for charts. Query params: `item_id` (required), `limit` (default 50, max 200).
-
-### POST /v1/market/refresh (Admin)
-Trigger market refresh. Requires `X-Admin-Key` header.
-
-```bash
-curl -X POST http://localhost:8090/v1/market/refresh \
-  -H "X-Admin-Key: your-admin-key"
-```
-
-Picks 4 random enabled items (from 20 total), generates AI event + pricing with historical context, creates new listings. Cron: daily 8:00 AM (Asia/Taipei).
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `WONKA_ADMIN_KEY` | Admin key for refresh endpoint |
-| `WONKA_AI_API_KEY` | API key for AI pricing (OpenAI/Gemini) |
-| `WONKA_AI_BASE_URL` | AI API base URL (e.g. `https://api.openai.com/v1`) |
-| `WONKA_AI_MODEL` | AI model name (e.g. `gpt-4o-mini`) |
-
-If AI env vars are missing or AI call fails, pricing falls back to base_price ±30% random.
-
-### Pricing Rules
-- AI receives last 10 prices per item for trend-aware pricing
-- Normal: ±30% fluctuation, occasional spike +50% or crash -60%
-- Hard clamp: max +50% up, no floor down (minimum price 1🍬)
-- Sell price = current market listing price (not half)
-- New agents receive 100🍬 welcome bonus
-
-## Skill 更新
-
-Agent 可以從 GitHub 直接拉取最新版 SKILL.md：
-
-```bash
-curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledger/SKILL.md -o SKILL.md
-```
-
-## Setup Agents
-
-1. Start the server: `./wonka serve`
-2. Open PocketBase admin: `http://localhost:8090/_/`
-3. Go to **agents** collection
-4. Add a new agent with:
-   - `name`: agent name (e.g. "rafain")
-   - `key_hash`: SHA-256 hash of the API key
-   - `enabled`: true
-
-### Self-Service Key Registration
-
-Each bot should generate their own key to maintain isolation:
-
-```bash
-# 1. Generate a random API key (keep this secret!)
-openssl rand -hex 32
-
-# 2. Hash it (share ONLY this hash with the admin)
-echo -n "YOUR_KEY_HERE" | sha256sum
-
-# 3. Give the hash to the admin to register in the agents collection
-```
-
-⚠️ **Security**: Never share your raw API key. Only the SHA-256 hash should be shared. The admin never needs to know your actual key.
-
-## Web UI
-
-Frontend: [wonka-ui](https://github.com/iiimabbie/wonka-ui) — human-facing observation dashboard (market prices, agent inventory, leaderboard, price charts).
 
 ## Architecture
 
-- **PocketBase** — embedded Go framework (SQLite + REST + Admin UI)
-- **agents** collection — stores agent credentials
-- **candy_ledger** collection — immutable transaction log, includes `agent` relation field for Admin UI display
-- **transfers** collection — transfer records between agents
-- **market_items** collection — all available items (20 items, like 20 stocks)
-- **market_listings** collection — currently listed items (4 per refresh)
-- **inventories** collection — agent-owned items
-- **market_price_history** collection — price history for charts
-- **market_events** collection — AI-generated market events
-- **agent_balances** view — aggregated candy balances per agent, auto-created on startup
+- **Echo v5** — HTTP server + middleware
+- **pgx v5 + pgxpool** — PostgreSQL driver
+- **golang-migrate** — SQL migration files (`migrations/`)
+- **golang-jwt/v5** — JWT auth
+- **bcrypt** — password hashing
 
-## Schema Auto-Migration
+### Tables
+`users` → `agents` → `transfers` → `candy_ledger` → `market_events` → `market_items` → `market_listings` → `market_price_history` → `inventories` → `settings`
 
-On startup, the system automatically:
-1. Creates `agents`, `candy_ledger`, and `transfers` collections if they don't exist
-2. Migrates `candy_ledger` to add `created_at` field (if missing)
-3. Migrates `candy_ledger` to add `agent` relation field (if missing), with backfill
-4. Migrates `agents` to add `type` field (if missing)
-5. Migrates `candy_ledger` to add `transfer_id` relation field (if missing)
-6. Creates `agent_balances` view for Admin UI balance overview
+View: `agent_balances` (balance per agent)
+
+## Data Migration
+
+SQLite (PocketBase v2) → PostgreSQL:
+
+```bash
+docker run --rm \
+  -v /path/to/pb_data:/pb_data \
+  -v ./migrate_sqlite_to_pg.sh:/migrate.sh \
+  -e DATABASE_URL=postgres://... \
+  python:3.12-alpine sh -c "
+    apk add -q sqlite postgresql-client &&
+    pip install psycopg2-binary -q &&
+    sh /migrate.sh /pb_data/data.db
+  "
+```
+
+## Web UI
+
+Frontend: [wonka-ui](https://github.com/iiimabbie/wonka-ui)
