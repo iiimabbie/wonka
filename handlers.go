@@ -68,7 +68,19 @@ func handleLogin(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{"token": token})
+	// Fetch user name for UI
+	var name string
+	pool.QueryRow(context.Background(), `SELECT name FROM users WHERE id = $1`, userID).Scan(&name)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"token": token,
+		"user": map[string]string{
+			"id":    userID,
+			"email": r.Email,
+			"name":  name,
+			"role":  role,
+		},
+	})
 }
 
 // ── Candy Handlers ───────────────────────────────────────────────────────────
@@ -362,9 +374,13 @@ func handleListAgents(c echo.Context) error {
 		ID      string `json:"id"`
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
+		Balance int    `json:"balance"`
 	}
 	rows, err := pool.Query(context.Background(),
-		`SELECT id, name, enabled FROM agents WHERE owner = $1 ORDER BY created_at`,
+		`SELECT a.id, a.name, a.enabled, COALESCE(ab.balance, 0)
+		 FROM agents a
+		 LEFT JOIN agent_balances ab ON ab.id = a.id
+		 WHERE a.owner = $1 ORDER BY a.created_at`,
 		user.ID,
 	)
 	if err != nil {
@@ -375,7 +391,7 @@ func handleListAgents(c echo.Context) error {
 	agents := []agentItem{}
 	for rows.Next() {
 		var a agentItem
-		rows.Scan(&a.ID, &a.Name, &a.Enabled)
+		rows.Scan(&a.ID, &a.Name, &a.Enabled, &a.Balance)
 		agents = append(agents, a)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"agents": agents})
