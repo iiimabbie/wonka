@@ -260,7 +260,7 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 0.9,
-		"max_tokens":  500,
+		"max_tokens":  1000,
 	})
 
 	client := &http.Client{Timeout: 30 * time.Second}
