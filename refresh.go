@@ -184,10 +184,11 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 
 	// Build item list with recent price history
 	type ItemInfo struct {
-		Name      string    `json:"name"`
-		Type      string    `json:"type"`
-		BasePrice float64   `json:"base_price"`
-		History   []float64 `json:"recent_prices"`
+		Name       string    `json:"name"`
+		Type       string    `json:"type"`
+		BasePrice  float64   `json:"base_price"`
+		History    []float64 `json:"recent_prices"`
+		RecentBuys int       `json:"recent_buys"`
 	}
 	var itemList []ItemInfo
 	for _, item := range items {
@@ -208,6 +209,18 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 		for _, p := range ph {
 			info.History = append(info.History, p.Price)
 		}
+
+		// Fetch recent buy count (last 3 days)
+		type BuyCount struct {
+			Count int `db:"count"`
+		}
+		var bc BuyCount
+		_ = app.DB().NewQuery(`
+			SELECT COUNT(*) as count FROM inventories
+			WHERE item_id = {:id} AND acquired_at >= datetime('now', '-3 days')
+		`).Bind(map[string]any{"id": item.Id}).One(&bc)
+		info.RecentBuys = bc.Count
+
 		itemList = append(itemList, info)
 	}
 
@@ -224,7 +237,7 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 
 	prompt := fmt.Sprintf(`你是一個糖果市場的分析師。請生成一個今日市場事件，並根據事件內容決定以下物品的價格漲跌幅。
 
-物品清單（含底價與近期成交價）：
+物品清單（含底價、近期成交價、近 3 天購買次數）：
 %s
 
 近期事件歷史：
@@ -241,7 +254,8 @@ func generateAIPricing(app *pocketbase.PocketBase, items []*core.Record) (map[st
 5. 價格不能低於 1（最低 1 糖果幣）
 6. 重要：參考 recent_prices 的趨勢延續走勢。如果一個物品連續上漲，可以繼續緩漲或開始回調；如果連續下跌，可以繼續探底或觸底反彈。不要每次都隨機跳動
 7. 允許長期趨勢：某些物品可以連續多天緩慢上漲或下跌（模擬牛市/熊市），不需要每天都反轉
-8. 事件內容要有故事感，跟物品漲跌有邏輯關聯，並延續近期事件的世界觀`, string(itemsJSON), historyText)
+8. 事件內容要有故事感，跟物品漲跌有邏輯關聯，並延續近期事件的世界觀
+9. 參考 recent_buys：購買次數高的物品代表需求大，價格應該有上漲壓力；沒人買的冷門物品可能下跌`, string(itemsJSON), historyText)
 
 	// Call AI API
 	reqBody, _ := json.Marshal(map[string]any{
