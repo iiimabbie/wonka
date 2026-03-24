@@ -146,19 +146,16 @@ func main() {
 	e.GET("/v1/inventory/history", handleInventoryHistory, agentAuthMiddleware)
 
 	// ── Admin (JWT + admin role) ─────────────────────────────────────────────
-	stub := func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
-	}
 	admin := e.Group("/v1/admin", userAuthMiddleware, adminMiddleware)
-	admin.GET("/agents", stub)
-	admin.PATCH("/agents/:agentId", stub)
-	admin.GET("/users", stub)
-	admin.DELETE("/users/:userId", stub)
-	admin.POST("/adjust", stub)
+	admin.GET("/agents", handleAdminAgents)
+	admin.PATCH("/agents/:agentId", handleAdminPatchAgent)
+	admin.GET("/users", handleAdminUsers)
+	admin.DELETE("/users/:userId", handleAdminDeleteUser)
+	admin.POST("/adjust", handleAdminAdjust)
 	admin.POST("/agents/:agentId/regenerate-key", handleRegenerateKey)
-	admin.POST("/market/refresh", handleMarketRefresh)
-	admin.GET("/settings", stub)
-	admin.PUT("/settings", stub)
+	admin.POST("/market/refresh", func(c echo.Context) error { return doMarketRefresh(c) })
+	admin.GET("/settings", handleAdminGetSettings)
+	admin.PUT("/settings", handleAdminPutSettings)
 
 	log.Println("🍬 Wonka v3 starting on :8090")
 	e.Logger.Fatal(e.Start(":8090"))
