@@ -138,14 +138,6 @@ func handleMarketBuy(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory error"})
 	}
 
-	_, err = tx.Exec(context.Background(),
-		`INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`,
-		itemID, price,
-	)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "price history error"})
-	}
-
 	if err := tx.Commit(context.Background()); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
