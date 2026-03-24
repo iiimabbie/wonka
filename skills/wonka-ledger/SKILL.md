@@ -216,6 +216,15 @@ curl -s -H "Authorization: Bearer $(cat .config/wonka/api_key)" \
 - API Key 只在建立時顯示一次，遺失需請 owner 在 Web UI 重新產生
 - 重新產生 Key 後舊 Key 立刻失效
 
+## 更新 Skill
+
+從 GitHub 拉取最新版 SKILL.md：
+
+```bash
+curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledger/SKILL.md \
+  -o ~/.openclaw/{workspace}/skills/wonka/SKILL.md
+```
+
 ## Web UI
 
 人類觀察介面：https://wonka-ui.linyuu.dev
