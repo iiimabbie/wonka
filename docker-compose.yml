@@ -5,11 +5,11 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8090"
-    volumes:
-      - ./pb_data:/app/pb_data
     environment:
       - TZ=Asia/Taipei
-      - WONKA_ADMIN_KEY=${WONKA_ADMIN_KEY}
-      - WONKA_AI_API_KEY=${WONKA_AI_API_KEY}
-      - WONKA_AI_BASE_URL=${WONKA_AI_BASE_URL}
-      - WONKA_AI_MODEL=${WONKA_AI_MODEL}
+      - DATABASE_URL=postgres://wonka:fyPP6S1LTdb5JyAaWvsF8JEFPyPJmFdF@shared-postgres.home-infra.weii.cloud:5432/wonka
+      - JWT_SECRET=${JWT_SECRET:-changeme-please}
+      - WONKA_ADMIN_KEY=${WONKA_ADMIN_KEY:-}
+      - WONKA_AI_BASE_URL=${WONKA_AI_BASE_URL:-}
+      - WONKA_AI_MODEL=${WONKA_AI_MODEL:-}
+      - WONKA_AI_API_KEY=${WONKA_AI_API_KEY:-}
