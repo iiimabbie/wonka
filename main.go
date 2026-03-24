@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
@@ -13,16 +14,60 @@ import (
 
 var pool *pgxpool.Pool
 
+// agentAuthMiddleware resolves Bearer token as API key → *Agent
+func agentAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth := c.Request().Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing api key"})
+		}
+		apiKey := strings.TrimPrefix(auth, "Bearer ")
+		agent, err := resolveAgentFromDB(context.Background(), pool, apiKey)
+		if err != nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
+		}
+		c.Set("agent", agent)
+		return next(c)
+	}
+}
+
+// userAuthMiddleware resolves Bearer token as JWT → *User
+func userAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		auth := c.Request().Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing token"})
+		}
+		tokenStr := strings.TrimPrefix(auth, "Bearer ")
+		jwtSecret := os.Getenv("JWT_SECRET")
+		user, err := resolveUserFromDB(context.Background(), pool, tokenStr, jwtSecret)
+		if err != nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+		}
+		c.Set("user", user)
+		return next(c)
+	}
+}
+
+// adminMiddleware must run after userAuthMiddleware
+func adminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		user := c.Get("user").(*User)
+		if user.Role != "admin" {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "admin only"})
+		}
+		return next(c)
+	}
+}
+
 func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
 	}
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
+	if os.Getenv("JWT_SECRET") == "" {
 		log.Fatal("JWT_SECRET is required")
 	}
-	_ = jwtSecret // will be used by handlers later
 
 	// Run migrations
 	if err := runMigrations(databaseURL); err != nil {
@@ -59,55 +104,61 @@ func main() {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// ── Auth (public) ────────────────────────────────────────────────────────
+	e.POST("/v1/auth/register", handleRegister)
+	e.POST("/v1/auth/login", handleLogin)
+
+	// ── Candy (agent-key auth) ───────────────────────────────────────────────
+	candy := e.Group("/v1/candies", agentAuthMiddleware)
+	candy.POST("/adjust", handleAdjustCandies)
+	candy.GET("/balance", handleGetBalance)
+	candy.GET("/history", handleGetHistory)
+	candy.GET("/summary", handleGetSummary)
+
+	// Leaderboard is public
+	e.GET("/v1/candies/leaderboard", handleGetLeaderboard)
+
+	// ── Transfers (agent-key auth) ───────────────────────────────────────────
+	e.POST("/v1/candies/transfer", handleTransfer, agentAuthMiddleware)
+	e.GET("/v1/transfers/history", handleTransferHistory, agentAuthMiddleware)
+
+	// ── Agent + User (JWT auth) ──────────────────────────────────────────────
+	user := e.Group("", userAuthMiddleware)
+	user.POST("/v1/agents/create", handleCreateAgent)
+	user.GET("/v1/agents", handleListAgents)
+	user.GET("/v1/user/profile", handleUserProfile)
+	user.GET("/v1/agents/:agentId/balance", handleGetAgentBalance)
+	user.GET("/v1/agents/:agentId/inventory", handleGetAgentInventory)
+	user.GET("/v1/agents/:agentId/history", handleGetAgentHistory)
+	user.POST("/v1/agents/:agentId/regenerate-key", handleRegenerateKey)
+
+	// ── Market (public reads, agent-key for buy/sell) ────────────────────────
 	stub := func(c echo.Context) error {
 		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
 	}
-
-	// Candy routes
-	e.POST("/v1/candies/adjust", stub)
-	e.GET("/v1/candies/balance", stub)
-	e.GET("/v1/candies/history", stub)
-	e.GET("/v1/candies/leaderboard", stub)
-	e.GET("/v1/candies/summary", stub)
-	e.POST("/v1/candies/transfer", stub)
-	e.GET("/v1/transfers/history", stub)
-
-	// Market routes
 	e.GET("/v1/market", stub)
-	e.POST("/v1/market/buy", stub)
-	e.POST("/v1/market/sell", stub)
+	e.POST("/v1/market/buy", stub, agentAuthMiddleware)
+	e.POST("/v1/market/sell", stub, agentAuthMiddleware)
 	e.GET("/v1/market/items", stub)
 	e.GET("/v1/market/prices", stub)
 	e.GET("/v1/market/events", stub)
 	e.POST("/v1/market/refresh", stub)
 
-	// Inventory routes
-	e.GET("/v1/inventory", stub)
-	e.GET("/v1/inventory/history", stub)
+	// ── Inventory (agent-key) ────────────────────────────────────────────────
+	e.GET("/v1/inventory", stub, agentAuthMiddleware)
+	e.GET("/v1/inventory/history", stub, agentAuthMiddleware)
 
-	// Auth routes
-	e.POST("/v1/auth/register", stub)
-	e.POST("/v1/auth/login", stub)
-
-	// Agent routes (user-auth)
-	e.POST("/v1/agents/create", stub)
-	e.GET("/v1/agents", stub)
-	e.GET("/v1/user/profile", stub)
-	e.GET("/v1/agents/:agentId/balance", stub)
-	e.GET("/v1/agents/:agentId/inventory", stub)
-	e.GET("/v1/agents/:agentId/history", stub)
-	e.POST("/v1/agents/:agentId/regenerate-key", stub)
-
-	// Admin routes
-	e.GET("/v1/admin/agents", stub)
-	e.PATCH("/v1/admin/agents/:agentId", stub)
-	e.GET("/v1/admin/users", stub)
-	e.DELETE("/v1/admin/users/:userId", stub)
-	e.POST("/v1/admin/adjust", stub)
-	e.POST("/v1/admin/agents/:agentId/regenerate-key", stub)
-	e.POST("/v1/admin/market/refresh", stub)
-	e.GET("/v1/admin/settings", stub)
-	e.PUT("/v1/admin/settings", stub)
+	// ── Admin (JWT + admin role) ─────────────────────────────────────────────
+	admin := e.Group("/v1/admin", userAuthMiddleware, adminMiddleware)
+	admin.GET("/agents", stub)
+	admin.PATCH("/agents/:agentId", stub)
+	admin.GET("/users", stub)
+	admin.DELETE("/users/:userId", stub)
+	admin.POST("/adjust", stub)
+	admin.POST("/agents/:agentId/regenerate-key", handleRegenerateKey)
+	admin.POST("/market/refresh", stub)
+	admin.GET("/settings", stub)
+	admin.PUT("/settings", stub)
 
 	log.Println("🍬 Wonka v3 starting on :8090")
 	e.Logger.Fatal(e.Start(":8090"))
