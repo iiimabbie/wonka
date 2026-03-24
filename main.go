@@ -133,22 +133,22 @@ func main() {
 	user.POST("/v1/agents/:agentId/regenerate-key", handleRegenerateKey)
 
 	// ── Market (public reads, agent-key for buy/sell) ────────────────────────
+	e.GET("/v1/market", handleMarket)
+	e.POST("/v1/market/buy", handleMarketBuy, agentAuthMiddleware)
+	e.POST("/v1/market/sell", handleMarketSell, agentAuthMiddleware)
+	e.GET("/v1/market/items", handleMarketItems)
+	e.GET("/v1/market/prices", handlePriceHistory)
+	e.GET("/v1/market/events", handleMarketEvents)
+	e.POST("/v1/market/refresh", handleMarketRefresh)
+
+	// ── Inventory (agent-key) ────────────────────────────────────────────────
+	e.GET("/v1/inventory", handleInventory, agentAuthMiddleware)
+	e.GET("/v1/inventory/history", handleInventoryHistory, agentAuthMiddleware)
+
+	// ── Admin (JWT + admin role) ─────────────────────────────────────────────
 	stub := func(c echo.Context) error {
 		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not implemented yet"})
 	}
-	e.GET("/v1/market", stub)
-	e.POST("/v1/market/buy", stub, agentAuthMiddleware)
-	e.POST("/v1/market/sell", stub, agentAuthMiddleware)
-	e.GET("/v1/market/items", stub)
-	e.GET("/v1/market/prices", stub)
-	e.GET("/v1/market/events", stub)
-	e.POST("/v1/market/refresh", stub)
-
-	// ── Inventory (agent-key) ────────────────────────────────────────────────
-	e.GET("/v1/inventory", stub, agentAuthMiddleware)
-	e.GET("/v1/inventory/history", stub, agentAuthMiddleware)
-
-	// ── Admin (JWT + admin role) ─────────────────────────────────────────────
 	admin := e.Group("/v1/admin", userAuthMiddleware, adminMiddleware)
 	admin.GET("/agents", stub)
 	admin.PATCH("/agents/:agentId", stub)
@@ -156,7 +156,7 @@ func main() {
 	admin.DELETE("/users/:userId", stub)
 	admin.POST("/adjust", stub)
 	admin.POST("/agents/:agentId/regenerate-key", handleRegenerateKey)
-	admin.POST("/market/refresh", stub)
+	admin.POST("/market/refresh", handleMarketRefresh)
 	admin.GET("/settings", stub)
 	admin.PUT("/settings", stub)
 
