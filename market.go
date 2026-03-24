@@ -1,0 +1,461 @@
+package main
+
+import (
+	"context"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/labstack/echo/v4"
+)
+
+// ── GET /v1/market ───────────────────────────────────────────────────────────
+
+func handleMarket(c echo.Context) error {
+	type Listing struct {
+		ID          string    `json:"id"`
+		ItemName    string    `json:"item_name"`
+		ItemDesc    string    `json:"item_description"`
+		ItemType    string    `json:"item_type"`
+		BasePrice   int       `json:"base_price"`
+		Price       int       `json:"price"`
+		ImageURL    string    `json:"image_url"`
+		RefreshedAt time.Time `json:"refreshed_at"`
+		ExpiresAt   *time.Time `json:"expires_at"`
+	}
+
+	rows, err := pool.Query(context.Background(), `
+		SELECT ml.id, mi.name, mi.description, mi.type, mi.base_price, ml.price,
+		       mi.image_url, ml.refreshed_at, ml.expires_at
+		FROM market_listings ml
+		JOIN market_items mi ON mi.id = ml.item_id
+		WHERE ml.expired = false
+		ORDER BY ml.price DESC
+	`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer rows.Close()
+
+	listings := []Listing{}
+	for rows.Next() {
+		var l Listing
+		rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.BasePrice, &l.Price,
+			&l.ImageURL, &l.RefreshedAt, &l.ExpiresAt)
+		listings = append(listings, l)
+	}
+
+	// Latest event
+	type Event struct {
+		Description string    `json:"description"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	var event *Event
+	var e Event
+	err = pool.QueryRow(context.Background(),
+		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT 1`,
+	).Scan(&e.Description, &e.CreatedAt)
+	if err == nil {
+		event = &e
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"listings": listings,
+		"event":    event,
+	})
+}
+
+// ── POST /v1/market/buy ──────────────────────────────────────────────────────
+
+func handleMarketBuy(c echo.Context) error {
+	agent := c.Get("agent").(*Agent)
+	type req struct {
+		ListingID      string `json:"listing_id"`
+		IdempotencyKey string `json:"idempotencyKey"`
+	}
+	var r req
+	if err := c.Bind(&r); err != nil || r.ListingID == "" || r.IdempotencyKey == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "listing_id and idempotencyKey required"})
+	}
+
+	// Idempotency check
+	var exists bool
+	pool.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2)`,
+		agent.ID, r.IdempotencyKey,
+	).Scan(&exists)
+	if exists {
+		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
+	}
+
+	// Get listing
+	var itemID string
+	var itemName string
+	var price int
+	err := pool.QueryRow(context.Background(), `
+		SELECT ml.item_id, mi.name, ml.price
+		FROM market_listings ml
+		JOIN market_items mi ON mi.id = ml.item_id
+		WHERE ml.id = $1 AND ml.expired = false
+	`, r.ListingID).Scan(&itemID, &itemName, &price)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "listing not found or expired"})
+	}
+
+	// Check balance
+	var balance int
+	pool.QueryRow(context.Background(),
+		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
+	).Scan(&balance)
+	if balance < price {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error":   "insufficient balance",
+			"balance": balance,
+			"price":   price,
+		})
+	}
+
+	// Transaction: debit + inventory + price history
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer tx.Rollback(context.Background())
+
+	_, err = tx.Exec(context.Background(),
+		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
+		agent.ID, -price, "market buy: "+itemName, r.IdempotencyKey,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
+	}
+
+	_, err = tx.Exec(context.Background(),
+		`INSERT INTO inventories (agent_id, item_id, acquired_price) VALUES ($1, $2, $3)`,
+		agent.ID, itemID, price,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory error"})
+	}
+
+	_, err = tx.Exec(context.Background(),
+		`INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`,
+		itemID, price,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "price history error"})
+	}
+
+	if err := tx.Commit(context.Background()); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
+	}
+
+	// New balance
+	var newBalance int
+	pool.QueryRow(context.Background(),
+		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
+	).Scan(&newBalance)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"status":      "ok",
+		"item":        itemName,
+		"price":       price,
+		"new_balance": newBalance,
+	})
+}
+
+// ── POST /v1/market/sell ─────────────────────────────────────────────────────
+
+func handleMarketSell(c echo.Context) error {
+	agent := c.Get("agent").(*Agent)
+	type req struct {
+		InventoryID    string `json:"inventory_id"`
+		IdempotencyKey string `json:"idempotencyKey"`
+	}
+	var r req
+	if err := c.Bind(&r); err != nil || r.InventoryID == "" || r.IdempotencyKey == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "inventory_id and idempotencyKey required"})
+	}
+
+	// Idempotency
+	var exists bool
+	pool.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2)`,
+		agent.ID, r.IdempotencyKey,
+	).Scan(&exists)
+	if exists {
+		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
+	}
+
+	// Get inventory item (must be unsold + owned)
+	var itemID, itemName string
+	var acquiredPrice int
+	var soldAt *time.Time
+	err := pool.QueryRow(context.Background(), `
+		SELECT inv.item_id, mi.name, inv.acquired_price, inv.sold_at
+		FROM inventories inv
+		JOIN market_items mi ON mi.id = inv.item_id
+		WHERE inv.id = $1 AND inv.agent_id = $2
+	`, r.InventoryID, agent.ID).Scan(&itemID, &itemName, &acquiredPrice, &soldAt)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "inventory item not found"})
+	}
+	if soldAt != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "item already sold"})
+	}
+
+	// Sell price: current listing price if available, else base_price
+	var sellPrice int
+	err = pool.QueryRow(context.Background(), `
+		SELECT ml.price FROM market_listings ml
+		WHERE ml.item_id = $1 AND ml.expired = false
+		ORDER BY ml.refreshed_at DESC LIMIT 1
+	`, itemID).Scan(&sellPrice)
+	if err != nil {
+		// fallback to base_price
+		pool.QueryRow(context.Background(),
+			`SELECT base_price FROM market_items WHERE id = $1`, itemID,
+		).Scan(&sellPrice)
+	}
+
+	// Transaction: credit + mark sold
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer tx.Rollback(context.Background())
+
+	_, err = tx.Exec(context.Background(),
+		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
+		agent.ID, sellPrice, "market sell: "+itemName, r.IdempotencyKey,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
+	}
+
+	_, err = tx.Exec(context.Background(),
+		`UPDATE inventories SET sold_at = now(), sold_price = $1 WHERE id = $2`,
+		sellPrice, r.InventoryID,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory update error"})
+	}
+
+	if err := tx.Commit(context.Background()); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
+	}
+
+	var newBalance int
+	pool.QueryRow(context.Background(),
+		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
+	).Scan(&newBalance)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"status":         "ok",
+		"item":           itemName,
+		"acquired_price": acquiredPrice,
+		"sell_price":     sellPrice,
+		"new_balance":    newBalance,
+	})
+}
+
+// ── GET /v1/inventory ────────────────────────────────────────────────────────
+
+func handleInventory(c echo.Context) error {
+	agent := c.Get("agent").(*Agent)
+	type item struct {
+		ID            string    `json:"id"`
+		ItemName      string    `json:"item_name"`
+		ItemType      string    `json:"item_type"`
+		AcquiredAt    time.Time `json:"acquired_at"`
+		AcquiredPrice int       `json:"acquired_price"`
+	}
+	rows, err := pool.Query(context.Background(), `
+		SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price
+		FROM inventories inv
+		JOIN market_items mi ON mi.id = inv.item_id
+		WHERE inv.agent_id = $1 AND inv.sold_at IS NULL
+		ORDER BY inv.acquired_at DESC
+	`, agent.ID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer rows.Close()
+
+	items := []item{}
+	for rows.Next() {
+		var i item
+		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice)
+		items = append(items, i)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"agent": agent.Name,
+		"items": items,
+	})
+}
+
+// ── GET /v1/inventory/history ────────────────────────────────────────────────
+
+func handleInventoryHistory(c echo.Context) error {
+	agent := c.Get("agent").(*Agent)
+
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset, _ := strconv.Atoi(c.QueryParam("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	type item struct {
+		ID            string     `json:"id"`
+		ItemName      string     `json:"item_name"`
+		ItemType      string     `json:"item_type"`
+		AcquiredAt    time.Time  `json:"acquired_at"`
+		AcquiredPrice int        `json:"acquired_price"`
+		SoldAt        *time.Time `json:"sold_at"`
+		SoldPrice     *int       `json:"sold_price"`
+	}
+	rows, err := pool.Query(context.Background(), `
+		SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price, inv.sold_at, inv.sold_price
+		FROM inventories inv
+		JOIN market_items mi ON mi.id = inv.item_id
+		WHERE inv.agent_id = $1 AND inv.sold_at IS NOT NULL
+		ORDER BY inv.sold_at DESC
+		LIMIT $2 OFFSET $3
+	`, agent.ID, limit, offset)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer rows.Close()
+
+	items := []item{}
+	for rows.Next() {
+		var i item
+		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice)
+		items = append(items, i)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"agent":  agent.Name,
+		"items":  items,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+// ── GET /v1/market/items ─────────────────────────────────────────────────────
+
+func handleMarketItems(c echo.Context) error {
+	type item struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Type        string `json:"type"`
+		BasePrice   int    `json:"base_price"`
+	}
+	rows, err := pool.Query(context.Background(),
+		`SELECT id, name, description, type, base_price FROM market_items WHERE enabled = true ORDER BY name`,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer rows.Close()
+
+	items := []item{}
+	for rows.Next() {
+		var i item
+		rows.Scan(&i.ID, &i.Name, &i.Description, &i.Type, &i.BasePrice)
+		items = append(items, i)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"items": items})
+}
+
+// ── GET /v1/market/prices ────────────────────────────────────────────────────
+
+func handlePriceHistory(c echo.Context) error {
+	itemID := c.QueryParam("item_id")
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	type point struct {
+		Price       int       `json:"price"`
+		RefreshedAt time.Time `json:"refreshed_at"`
+	}
+
+	var rows interface{ Close() }
+	var err error
+	var pts []point
+
+	if itemID != "" {
+		r, e := pool.Query(context.Background(),
+			`SELECT price, refreshed_at FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT $2`,
+			itemID, limit,
+		)
+		rows = r
+		err = e
+		if err == nil {
+			defer r.Close()
+			for r.Next() {
+				var p point
+				r.Scan(&p.Price, &p.RefreshedAt)
+				pts = append(pts, p)
+			}
+		}
+	} else {
+		r, e := pool.Query(context.Background(),
+			`SELECT price, refreshed_at FROM market_price_history ORDER BY refreshed_at DESC LIMIT $1`,
+			limit,
+		)
+		rows = r
+		err = e
+		if err == nil {
+			defer r.Close()
+			for r.Next() {
+				var p point
+				r.Scan(&p.Price, &p.RefreshedAt)
+				pts = append(pts, p)
+			}
+		}
+	}
+	_ = rows
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	if pts == nil {
+		pts = []point{}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"prices": pts})
+}
+
+// ── GET /v1/market/events ────────────────────────────────────────────────────
+
+func handleMarketEvents(c echo.Context) error {
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit <= 0 || limit > 50 {
+		limit = 14
+	}
+
+	type event struct {
+		Description string    `json:"description"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	rows, err := pool.Query(context.Background(),
+		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT $1`, limit,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer rows.Close()
+
+	events := []event{}
+	for rows.Next() {
+		var e event
+		rows.Scan(&e.Description, &e.CreatedAt)
+		events = append(events, e)
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"events": events})
+}
