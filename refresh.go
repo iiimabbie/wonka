@@ -58,8 +58,8 @@ func doMarketRefresh(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no enabled items found"})
 	}
 
-	// 2. Pick up to 4 random items
-	picked := pickRandomItems(allItems, 4)
+	// 2. All enabled items
+	picked := allItems
 
 	// 3. Try AI pricing
 	effects, eventDesc, model, aiErr := generateAIPricing(ctx, picked)
@@ -232,7 +232,7 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 	}
 
 	itemsJSON, _ := json.Marshal(itemList)
-	prompt := fmt.Sprintf(`你是一個糖果市場的分析師。請生成一個今日市場事件，並根據事件內容決定以下物品的價格漲跌幅。
+	prompt := fmt.Sprintf(`你是一個糖果市場的分析師。請生成一個今日市場事件，並根據事件內容決定以下所有物品的價格漲跌幅（每件物品都必須有 effect）。
 
 物品清單（含底價、近期成交價、近 3 天購買次數）：
 %s
