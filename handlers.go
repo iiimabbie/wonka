@@ -458,15 +458,16 @@ func handleGetAgentInventory(c echo.Context) error {
 	type invItem struct {
 		ID            string     `json:"id"`
 		ItemName      string     `json:"item_name"`
+		ItemType      string     `json:"item_type"`
 		AcquiredAt    time.Time  `json:"acquired_at"`
 		AcquiredPrice int        `json:"acquired_price"`
 		SoldAt        *time.Time `json:"sold_at,omitempty"`
 		SoldPrice     *int       `json:"sold_price,omitempty"`
 	}
 	rows, err := pool.Query(context.Background(),
-		`SELECT inv.id, mi.name, inv.acquired_at, inv.acquired_price, inv.sold_at, inv.sold_price
+		`SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price, inv.sold_at, inv.sold_price
 		 FROM inventories inv JOIN market_items mi ON mi.id = inv.item_id
-		 WHERE inv.agent_id = $1 ORDER BY inv.acquired_at DESC`,
+		 WHERE inv.agent_id = $1 AND inv.sold_at IS NULL ORDER BY inv.acquired_at DESC`,
 		agentID,
 	)
 	if err != nil {
@@ -477,10 +478,10 @@ func handleGetAgentInventory(c echo.Context) error {
 	items := []invItem{}
 	for rows.Next() {
 		var i invItem
-		rows.Scan(&i.ID, &i.ItemName, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice)
+		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice)
 		items = append(items, i)
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"inventory": items})
+	return c.JSON(http.StatusOK, map[string]interface{}{"items": items})
 }
 
 func handleGetAgentHistory(c echo.Context) error {

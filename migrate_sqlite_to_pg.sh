@@ -21,7 +21,7 @@ echo "[1/4] Exporting SQLite tables..."
 
 sqlite3 "$DB" -csv "SELECT id,email,password,name,role FROM users;" > /tmp/wk_users.csv
 sqlite3 "$DB" -csv "SELECT id,name,key_hash,enabled,owner FROM agents;" > /tmp/wk_agents.csv
-sqlite3 "$DB" -csv "SELECT id,agent_id,delta,reason,idempotency_key,transfer_id,created_at FROM candy_ledger;" > /tmp/wk_ledger.csv
+sqlite3 "$DB" -csv "SELECT rowid,id,agent_id,delta,reason,idempotency_key,transfer_id,created_at FROM candy_ledger ORDER BY rowid;" > /tmp/wk_ledger.csv
 sqlite3 "$DB" -csv "SELECT id,from_agent,to_agent,amount,reason,idempotency_key,created_at FROM transfers;" > /tmp/wk_transfers.csv
 sqlite3 "$DB" -csv "SELECT id,name,description,type,base_price,image_url,enabled FROM market_items;" > /tmp/wk_items.csv
 sqlite3 "$DB" -csv "SELECT id,item_id,price,expired,refreshed_at,expires_at FROM market_listings;" > /tmp/wk_listings.csv
@@ -184,15 +184,17 @@ print(f"{ok} rows")
 print("  candy_ledger...", end=" ", flush=True)
 ok = 0
 for row in read_csv('/tmp/wk_ledger.csv'):
-    old_id, agent_old, delta, reason, ikey, xfer_old, created = row
+    rowid, old_id, agent_old, delta, reason, ikey, xfer_old, created = row
     agent_new = agent_map.get(agent_old)
     xfer_new  = xfer_map.get(nonempty(xfer_old))
     if not agent_new: continue
+    # 空 created_at → 用 2026-03-14 base + rowid 秒，保留原始順序
+    ts = parse_ts(created) if created and created.strip() else f'2026-03-14 00:{int(rowid)//60:02d}:{int(rowid)%60:02d}+00'
     cur.execute("""
         INSERT INTO candy_ledger (id, agent_id, delta, reason, idempotency_key, transfer_id, created_at)
-        VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, COALESCE(%s, now()))
+        VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s)
         ON CONFLICT (agent_id, idempotency_key) DO NOTHING
-    """, (agent_new, int(float(delta)), reason, ikey, xfer_new, parse_ts(created)))
+    """, (agent_new, int(float(delta)), reason, ikey, xfer_new, ts))
     ok += 1
 print(f"{ok} rows")
 
