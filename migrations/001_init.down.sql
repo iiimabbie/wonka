@@ -1,0 +1,11 @@
+DROP VIEW IF EXISTS agent_balances;
+DROP TABLE IF EXISTS inventories;
+DROP TABLE IF EXISTS market_price_history;
+DROP TABLE IF EXISTS market_listings;
+DROP TABLE IF EXISTS market_items;
+DROP TABLE IF EXISTS market_events;
+DROP TABLE IF EXISTS candy_ledger;
+DROP TABLE IF EXISTS transfers;
+DROP TABLE IF EXISTS agents;
+DROP TABLE IF EXISTS settings;
+DROP TABLE IF EXISTS users;
