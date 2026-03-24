@@ -166,7 +166,7 @@ func handleGetHistory(c echo.Context) error {
 
 func handleGetLeaderboard(c echo.Context) error {
 	rows, err := pool.Query(context.Background(),
-		`SELECT name, balance FROM agent_balances ORDER BY balance DESC`,
+		`SELECT name, balance FROM agent_balances WHERE name NOT ILIKE 'test%' ORDER BY balance DESC`,
 	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
