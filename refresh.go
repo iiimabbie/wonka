@@ -36,15 +36,26 @@ func handleMarketRefresh(c echo.Context) error {
 }
 
 // doMarketRefresh is also called from admin route
-func doMarketRefresh(c echo.Context) error {
+type refreshResult struct {
+	Listings []struct {
+		Name  string  `json:"name"`
+		Price int     `json:"price"`
+		Delta float64 `json:"delta"`
+	} `json:"listings"`
+	Event     string `json:"event,omitempty"`
+	AIFallback bool  `json:"ai_fallback,omitempty"`
+	AIError   string `json:"ai_error,omitempty"`
+	Count     int    `json:"count"`
+}
+
+func runMarketRefresh() (*refreshResult, error) {
 	ctx := context.Background()
 
-	// 1. Get all enabled items
 	rows, err := pool.Query(ctx,
 		`SELECT id, name, type, base_price FROM market_items WHERE enabled = true`,
 	)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+		return nil, err
 	}
 	var allItems []dbItem
 	for rows.Next() {
@@ -55,19 +66,13 @@ func doMarketRefresh(c echo.Context) error {
 	rows.Close()
 
 	if len(allItems) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no enabled items found"})
+		return nil, fmt.Errorf("no enabled items found")
 	}
 
-	// 2. All enabled items
 	picked := allItems
-
-	// 3. Try AI pricing
 	effects, eventDesc, model, aiErr := generateAIPricing(ctx, picked)
-
-	// 4. Expire old listings
 	pool.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
 
-	// 5. Create event record
 	var eventID string
 	if aiErr == nil && eventDesc != "" {
 		effectJSON, _ := json.Marshal(effects)
@@ -77,15 +82,8 @@ func doMarketRefresh(c echo.Context) error {
 		).Scan(&eventID)
 	}
 
-	// 6. Create new listings + price history
 	expiresAt := time.Now().Add(12 * time.Hour)
-
-	type result struct {
-		Name  string  `json:"name"`
-		Price int     `json:"price"`
-		Delta float64 `json:"delta"`
-	}
-	var results []result
+	res := &refreshResult{}
 
 	for _, item := range picked {
 		var delta float64
@@ -98,7 +96,6 @@ func doMarketRefresh(c echo.Context) error {
 		if delta > 0.5 {
 			delta = 0.5
 		}
-
 		price := int(math.Max(1, math.Round(float64(item.BasePrice)*(1+delta))))
 
 		if eventID != "" {
@@ -112,29 +109,29 @@ func doMarketRefresh(c echo.Context) error {
 				item.ID, price, expiresAt,
 			)
 		}
-
-		pool.Exec(ctx,
-			`INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`,
-			item.ID, price,
-		)
-
-		results = append(results, result{Name: item.Name, Price: price, Delta: delta})
+		pool.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, item.ID, price)
+		res.Listings = append(res.Listings, struct {
+			Name  string  `json:"name"`
+			Price int     `json:"price"`
+			Delta float64 `json:"delta"`
+		}{item.Name, price, delta})
 	}
 
-	resp := map[string]interface{}{
-		"status":   "ok",
-		"listings": results,
-		"count":    len(results),
-	}
-	if eventDesc != "" {
-		resp["event"] = eventDesc
-	}
+	res.Count = len(res.Listings)
+	res.Event = eventDesc
 	if aiErr != nil {
-		resp["ai_fallback"] = true
-		resp["ai_error"] = aiErr.Error()
+		res.AIFallback = true
+		res.AIError = aiErr.Error()
 	}
+	return res, nil
+}
 
-	return c.JSON(http.StatusOK, resp)
+func doMarketRefresh(c echo.Context) error {
+	res, err := runMarketRefresh()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, res)
 }
 
 func pickRandomItems[T any](items []T, n int) []T {

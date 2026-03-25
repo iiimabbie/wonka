@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
@@ -156,6 +157,36 @@ func main() {
 	admin.POST("/market/refresh", func(c echo.Context) error { return doMarketRefresh(c) })
 	admin.GET("/settings", handleAdminGetSettings)
 	admin.PUT("/settings", handleAdminPutSettings)
+
+	// Internal market refresh scheduler: 08:00 and 20:00 Asia/Taipei
+	go func() {
+		loc, _ := time.LoadLocation("Asia/Taipei")
+		for {
+			now := time.Now().In(loc)
+			// next 08:00 or 20:00
+			next8 := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, loc)
+			next20 := time.Date(now.Year(), now.Month(), now.Day(), 20, 0, 0, 0, loc)
+			if now.After(next8) {
+				next8 = next8.Add(24 * time.Hour)
+			}
+			if now.After(next20) {
+				next20 = next20.Add(24 * time.Hour)
+			}
+			nextRun := next8
+			if next20.Before(next8) {
+				nextRun = next20
+			}
+			wait := time.Until(nextRun)
+			log.Printf("📅 Next market refresh scheduled in %v (at %s)", wait.Round(time.Second), nextRun.Format("2006-01-02 15:04:05 MST"))
+			time.Sleep(wait)
+			log.Println("🔄 Triggering scheduled market refresh...")
+			if res, err := runMarketRefresh(); err != nil {
+				log.Printf("⚠️ Scheduled market refresh error: %v", err)
+			} else {
+				log.Printf("✅ Scheduled market refresh complete: %d items, ai_fallback=%v", res.Count, res.AIFallback)
+			}
+		}
+	}()
 
 	log.Println("🍬 Wonka v3 starting on :8090")
 	e.Logger.Fatal(e.Start(":8090"))
