@@ -220,21 +220,35 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 		itemList = append(itemList, info)
 	}
 
+	latestEvent := ""
 	historyText := ""
 	for i, ev := range recentEvents {
+		if i == 0 {
+			latestEvent = ev
+		}
 		historyText += fmt.Sprintf("%d. %s\n", i+1, ev)
 	}
 	if historyText == "" {
 		historyText = "（尚無歷史事件）"
 	}
 
+	continuationHint := ""
+	if latestEvent != "" {
+		continuationHint = fmt.Sprintf(`
+【重要】最新進行中的事件：「%s」
+請優先考慮延續這個事件的發展（例如事件的後續影響、餘震、相關反應），而不是創造全新的事件。
+只有在劇情自然結束（例如事件解決了、勝負分出了）時，才可以引入全新事件。
+延續事件時，event 欄位應描述該事件的「後續發展」，例如「第二天」「消息傳出」「調查持續」等。`, latestEvent)
+	}
+
 	itemsJSON, _ := json.Marshal(itemList)
-	prompt := fmt.Sprintf(`你是一個糖果市場的分析師。請生成一個今日市場事件，並根據事件內容決定以下所有物品的價格漲跌幅（每件物品都必須有 effect）。
+	prompt := fmt.Sprintf(`你是一個糖果市場的分析師，負責管理一個有趣的糖果股市世界。請根據市場情況決定本次刷新的事件與物品漲跌幅。
 
 物品清單（含底價、近期成交價、近 3 天購買次數）：
 %s
 
-近期事件歷史：
+近期事件歷史（最新在前）：
+%s
 %s
 
 請用 JSON 回覆，格式如下（不要包含 markdown code block）：
@@ -242,14 +256,14 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 
 定價規則：
 1. 漲跌幅數值是相對底價的比例，例如 0.2 = 漲 20%%，-0.3 = 跌 30%%
-2. 大部分時候（70%%）：物品在 ±10%% 內微幅波動，市場平穩
-3. 偶爾（25%%）：受事件影響，個別物品 ±15~30%% 中幅波動
-4. 罕見（5%%）：重大事件導致某物品大漲 +40~50%% 或大跌 -40~60%%
-5. 價格不能低於 1（最低 1 糖果幣）
-6. 重要：參考 recent_prices 的趨勢延續走勢。如果一個物品連續上漲，可以繼續緩漲或開始回調；如果連續下跌，可以繼續探底或觸底反彈。不要每次都隨機跳動
-7. 允許長期趨勢：某些物品可以連續多天緩慢上漲或下跌（模擬牛市/熊市），不需要每天都反轉
-8. 事件內容要有故事感，跟物品漲跌有邏輯關聯，並延續近期事件的世界觀
-9. 參考 recent_buys：購買次數高的物品代表需求大，價格應該有上漲壓力；沒人買的冷門物品可能下跌`, string(itemsJSON), historyText)
+2. 每件物品都必須有 effect 值
+3. 大部分時候（70%%）：物品在 ±10%% 內微幅波動，市場平穩
+4. 偶爾（25%%）：受事件影響，個別物品 ±15~30%% 中幅波動
+5. 罕見（5%%）：重大事件導致某物品大漲 +40~50%% 或大跌 -40~60%%
+6. 參考 recent_prices 的趨勢：連漲可繼續緩漲或回調，連跌可繼續探底或反彈，不要無規律亂跳
+7. 允許長期趨勢：某些物品可以連續多次緩慢上漲或下跌（牛市/熊市），不需要每次都反轉
+8. 事件與物品漲跌要有邏輯關聯，跌的物品要說得通為什麼跌
+9. 參考 recent_buys：購買多的物品需求大有上漲壓力，沒人買的物品可能繼續下跌`, string(itemsJSON), historyText, continuationHint)
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"model": aiModel,
