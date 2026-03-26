@@ -263,7 +263,8 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 6. 參考 recent_prices 的趨勢：連漲可繼續緩漲或回調，連跌可繼續探底或反彈，不要無規律亂跳
 7. 允許長期趨勢：某些物品可以連續多次緩慢上漲或下跌（牛市/熊市），不需要每次都反轉
 8. 事件與物品漲跌要有邏輯關聯，跌的物品要說得通為什麼跌
-9. 參考 recent_buys：購買多的物品需求大有上漲壓力，沒人買的物品可能繼續下跌`, string(itemsJSON), historyText, continuationHint)
+9. 參考 recent_buys：購買多的物品需求大有上漲壓力，沒人買的物品可能繼續下跌
+10. 供需邏輯：物品在劇情中被大量消耗/使用 = 供給減少、稀缺性增加，應有上漲壓力；物品滯銷/囤積過剩 = 供過於求，應有下跌壓力。注意區分「需求旺盛導致消耗」（利多）vs「物品本身不受歡迎」（利空）`, string(itemsJSON), historyText, continuationHint)
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"model": aiModel,

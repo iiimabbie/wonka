@@ -165,22 +165,45 @@ func handleGetHistory(c echo.Context) error {
 }
 
 func handleGetLeaderboard(c echo.Context) error {
-	rows, err := pool.Query(context.Background(),
-		`SELECT name, balance FROM agent_balances WHERE name NOT ILIKE 'test%' ORDER BY balance DESC`,
-	)
+	rows, err := pool.Query(context.Background(), `
+		SELECT
+			ab.name,
+			ab.balance,
+			COALESCE(inv_val.portfolio_value, 0) AS portfolio_value,
+			ab.balance + COALESCE(inv_val.portfolio_value, 0) AS total_assets
+		FROM agent_balances ab
+		LEFT JOIN (
+			SELECT
+				inv.agent_id,
+				SUM(COALESCE(ml.price, mi.base_price)) AS portfolio_value
+			FROM inventories inv
+			JOIN market_items mi ON mi.id = inv.item_id
+			LEFT JOIN LATERAL (
+				SELECT price FROM market_listings
+				WHERE item_id = inv.item_id AND expired = false
+				ORDER BY refreshed_at DESC LIMIT 1
+			) ml ON true
+			WHERE inv.sold_at IS NULL
+			GROUP BY inv.agent_id
+		) inv_val ON inv_val.agent_id = ab.id
+		WHERE ab.name NOT ILIKE 'test%'
+		ORDER BY total_assets DESC
+	`)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
 
 	type item struct {
-		Name    string `json:"name"`
-		Balance int    `json:"balance"`
+		Name           string `json:"name"`
+		Balance        int    `json:"balance"`
+		PortfolioValue int    `json:"portfolio_value"`
+		TotalAssets    int    `json:"total_assets"`
 	}
 	lb := []item{}
 	for rows.Next() {
 		var i item
-		rows.Scan(&i.Name, &i.Balance)
+		rows.Scan(&i.Name, &i.Balance, &i.PortfolioValue, &i.TotalAssets)
 		lb = append(lb, i)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"leaderboard": lb})
