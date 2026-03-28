@@ -31,22 +31,24 @@ INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES
 ON CONFLICT (agent_id, idempotency_key) DO NOTHING;
 
 -- Market items (enabled only, from production)
+-- Test anchor prices are intentionally different from production
 INSERT INTO market_items (name, description, type, anchor_price, image_url, enabled) VALUES
-  ('星空糖霜', '撒在任何食物上都會變得 ✨ aesthetic ✨，Instagram 必備', '劇情', 8, '', true),
-  ('時光果凍', '吃了會短暫回到過去的記憶', '劇情', 12, '', true),
-  ('月光糖漿', '月圓才能請 sub_agent 採集，所以供應量永遠不夠', '劇情', 14, '', true),
-  ('泡泡糖氣球', '吹出來的泡泡可以當交通工具', '功能性', 9, '', true),
-  ('稀有寶石', '沒人知道它為什麼在糖果店賣，他會閃閃發光地看著你', '劇情', 10, '', true),
-  ('記憶麵包', '把知識印在上面吃掉就學會', '功能性', 10, '', true),
-  ('變形藥水', '哈利波特──混血王子的背叛', '功能性', 8, '', true),
-  ('迷幻蘑菇餅', '吃了會看到奇幻世界（無害的）', '劇情', 9, '', true),
-  ('隱形軟糖', '吃了會透明十分鐘，但衣服不會，使用時請記算好時間', '功能性', 15, '', true),
-  ('雷電跳跳糖', '在舌頭上劈啪作響的帶電跳跳糖', '收藏', 4, '', true),
-  ('黃金太妃糖', '傳說是用真金打造的太妃糖', '收藏', 11, '', true),
-  ('龍息辣糖', '吃完嘴巴會噴火三秒鐘', '功能性', 7, '', true)
+  ('星空糖霜', '撒在任何食物上都會變得 ✨ aesthetic ✨，Instagram 必備', '劇情', 15, '', true),
+  ('時光果凍', '吃了會短暫回到過去的記憶', '劇情', 22, '', true),
+  ('月光糖漿', '月圓才能請 sub_agent 採集，所以供應量永遠不夠', '劇情', 18, '', true),
+  ('泡泡糖氣球', '吹出來的泡泡可以當交通工具', '功能性', 13, '', true),
+  ('稀有寶石', '沒人知道它為什麼在糖果店賣，他會閃閃發光地看著你', '劇情', 20, '', true),
+  ('記憶麵包', '把知識印在上面吃掉就學會', '功能性', 17, '', true),
+  ('變形藥水', '哈利波特──混血王子的背叛', '功能性', 11, '', true),
+  ('迷幻蘑菇餅', '吃了會看到奇幻世界（無害的）', '劇情', 14, '', true),
+  ('隱形軟糖', '吃了會透明十分鐘，但衣服不會，使用時請記算好時間', '功能性', 25, '', true),
+  ('雷電跳跳糖', '在舌頭上劈啪作響的帶電跳跳糖', '收藏', 6, '', true),
+  ('黃金太妃糖', '傳說是用真金打造的太妃糖', '收藏', 19, '', true),
+  ('龍息辣糖', '吃完嘴巴會噴火三秒鐘', '功能性', 9, '', true)
 ON CONFLICT (name) DO NOTHING;
 
 -- AI settings
+-- Test AI config (fake key, won't call real API in tests)
 INSERT INTO settings (ai_base_url, ai_model, ai_api_key)
-SELECT 'https://proxy.linyuu.dev/v1', 'gemini-3-flash-preview', 're-6H3GrHFu45AAkKMrB'
+SELECT 'https://proxy.linyuu.dev/v1', 'gemini-3-flash-preview', 'test-fake-ai-key'
 WHERE NOT EXISTS (SELECT 1 FROM settings);

@@ -29,7 +29,7 @@ services:
       - WONKA_ADMIN_KEY=test-admin-key
       - WONKA_AI_BASE_URL=https://proxy.linyuu.dev/v1
       - WONKA_AI_MODEL=gemini-3-flash-preview
-      - WONKA_AI_API_KEY=re-6H3GrHFu45AAkKMrB
+      - WONKA_AI_API_KEY=test-fake-ai-key
     ports:
       - "8091:8090"
 
