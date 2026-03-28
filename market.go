@@ -40,8 +40,10 @@ func handleMarket(c echo.Context) error {
 	listings := []Listing{}
 	for rows.Next() {
 		var l Listing
-		rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
-			&l.ImageURL, &l.RefreshedAt, &l.ExpiresAt)
+		if err := rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
+			&l.ImageURL, &l.RefreshedAt, &l.ExpiresAt); err != nil {
+			continue
+		}
 		listings = append(listings, l)
 	}
 
@@ -105,10 +107,22 @@ func handleMarketBuy(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "listing not found or expired"})
 	}
 
-	// Check balance
+	// Transaction: lock agent + check balance + debit + inventory
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock agent row to prevent concurrent balance manipulation
+	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, agent.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
+	}
+
+	// Check balance inside transaction
 	var balance int
-	if err := pool.QueryRow(ctx,
-		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta), 0) FROM candy_ledger WHERE agent_id = $1`, agent.ID,
 	).Scan(&balance); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
@@ -119,13 +133,6 @@ func handleMarketBuy(c echo.Context) error {
 			"price":   price,
 		})
 	}
-
-	// Transaction: debit + inventory + price history
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
-	}
-	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
@@ -187,15 +194,28 @@ func handleMarketSell(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
 	}
 
-	// Get inventory item (must be unsold + owned)
+	// Transaction: lock agent + check ownership + credit + mark sold
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock agent row to prevent concurrent sell of same item
+	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, agent.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
+	}
+
+	// Get inventory item inside transaction (must be unsold + owned)
 	var itemID, itemName string
 	var acquiredPrice int
 	var soldAt *time.Time
-	err := pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT inv.item_id, mi.name, inv.acquired_price, inv.sold_at
 		FROM inventories inv
 		JOIN market_items mi ON mi.id = inv.item_id
 		WHERE inv.id = $1 AND inv.agent_id = $2
+		FOR UPDATE OF inv
 	`, r.InventoryID, agent.ID).Scan(&itemID, &itemName, &acquiredPrice, &soldAt)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "inventory item not found"})
@@ -206,27 +226,20 @@ func handleMarketSell(c echo.Context) error {
 
 	// Sell price: current listing → last price history → 1 (absolute fallback)
 	var sellPrice int
-	err = pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT ml.price FROM market_listings ml
 		WHERE ml.item_id = $1 AND ml.expired = false
 		ORDER BY ml.refreshed_at DESC LIMIT 1
 	`, itemID).Scan(&sellPrice)
 	if err != nil {
 		// fallback to most recent price history
-		err2 := pool.QueryRow(ctx,
+		err2 := tx.QueryRow(ctx,
 			`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 1`, itemID,
 		).Scan(&sellPrice)
 		if err2 != nil {
 			sellPrice = 1 // absolute fallback
 		}
 	}
-
-	// Transaction: credit + mark sold
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
-	}
-	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
@@ -282,7 +295,9 @@ func handleInventory(c echo.Context) error {
 	var rawItems []rawInventoryItem
 	for rows.Next() {
 		var i rawInventoryItem
-		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredPrice)
+		if err := rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredPrice); err != nil {
+			continue
+		}
 		rawItems = append(rawItems, i)
 	}
 
@@ -395,7 +410,9 @@ func handleInventoryHistory(c echo.Context) error {
 	items := []item{}
 	for rows.Next() {
 		var i item
-		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice)
+		if err := rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice); err != nil {
+			continue
+		}
 		items = append(items, i)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -416,53 +433,55 @@ func handlePriceHistory(c echo.Context) error {
 		limit = 50
 	}
 
-	type point struct {
-		Price       int       `json:"price"`
-		RefreshedAt time.Time `json:"refreshed_at"`
-	}
-
-	var rows interface{ Close() }
-	var err error
-	var pts []point
-
 	if itemID != "" {
-		r, e := pool.Query(ctx,
+		type point struct {
+			Price       int       `json:"price"`
+			RefreshedAt time.Time `json:"refreshed_at"`
+		}
+		rows, err := pool.Query(ctx,
 			`SELECT price, refreshed_at FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT $2`,
 			itemID, limit,
 		)
-		rows = r
-		err = e
-		if err == nil {
-			defer r.Close()
-			for r.Next() {
-				var p point
-				r.Scan(&p.Price, &p.RefreshedAt)
-				pts = append(pts, p)
-			}
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 		}
-	} else {
-		r, e := pool.Query(ctx,
-			`SELECT price, refreshed_at FROM market_price_history ORDER BY refreshed_at DESC LIMIT $1`,
-			limit,
-		)
-		rows = r
-		err = e
-		if err == nil {
-			defer r.Close()
-			for r.Next() {
-				var p point
-				r.Scan(&p.Price, &p.RefreshedAt)
-				pts = append(pts, p)
+		defer rows.Close()
+		pts := []point{}
+		for rows.Next() {
+			var p point
+			if err := rows.Scan(&p.Price, &p.RefreshedAt); err != nil {
+				continue
 			}
+			pts = append(pts, p)
 		}
+		return c.JSON(http.StatusOK, map[string]interface{}{"prices": pts})
 	}
-	_ = rows
 
+	// No item_id filter: include item info so results are meaningful
+	type point struct {
+		ItemID      string    `json:"item_id"`
+		ItemName    string    `json:"item_name"`
+		Price       int       `json:"price"`
+		RefreshedAt time.Time `json:"refreshed_at"`
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT ph.item_id, mi.name, ph.price, ph.refreshed_at
+		 FROM market_price_history ph
+		 JOIN market_items mi ON mi.id = ph.item_id
+		 ORDER BY ph.refreshed_at DESC LIMIT $1`,
+		limit,
+	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
-	if pts == nil {
-		pts = []point{}
+	defer rows.Close()
+	pts := []point{}
+	for rows.Next() {
+		var p point
+		if err := rows.Scan(&p.ItemID, &p.ItemName, &p.Price, &p.RefreshedAt); err != nil {
+			continue
+		}
+		pts = append(pts, p)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"prices": pts})
 }
@@ -491,7 +510,9 @@ func handleMarketEvents(c echo.Context) error {
 	events := []event{}
 	for rows.Next() {
 		var e event
-		rows.Scan(&e.Description, &e.CreatedAt)
+		if err := rows.Scan(&e.Description, &e.CreatedAt); err != nil {
+			continue
+		}
 		events = append(events, e)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"events": events})
@@ -503,10 +524,10 @@ func handleMarketSnapshot(c echo.Context) error {
 	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 
-	// 1. Balance
+	// 1. Balance (use agent_balances view for consistency)
 	var balance int
 	pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(delta), 0) FROM candy_ledger WHERE agent_id = $1`, agent.ID,
+		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
 	).Scan(&balance)
 
 	// 2. Inventory (grouped by item + price)

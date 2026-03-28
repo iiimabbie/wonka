@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -23,6 +24,9 @@ func handleRegister(c echo.Context) error {
 	var r req
 	if err := c.Bind(&r); err != nil || r.Email == "" || r.Password == "" || r.Name == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	if len(r.Password) < 8 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
 	}
 
 	hash, err := hashPassword(r.Password)
@@ -84,6 +88,46 @@ func handleLogin(c echo.Context) error {
 	})
 }
 
+// handleRefreshToken issues a new JWT if the current one is still valid.
+func handleRefreshToken(c echo.Context) error {
+	ctx := c.Request().Context()
+	auth := c.Request().Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing token"})
+	}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+	jwtSecret := os.Getenv("JWT_SECRET")
+
+	claims, err := validateJWT(tokenStr, jwtSecret)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+	}
+
+	var userID, email, name, role string
+	err = pool.QueryRow(ctx,
+		`SELECT id, email, name, role FROM users WHERE id = $1`,
+		claims.UserID,
+	).Scan(&userID, &email, &name, &role)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "user not found"})
+	}
+
+	newToken, err := generateJWT(userID, email, role, jwtSecret)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"token": newToken,
+		"user": map[string]string{
+			"id":    userID,
+			"email": email,
+			"name":  name,
+			"role":  role,
+		},
+	})
+}
+
 // ── Candy Handlers ───────────────────────────────────────────────────────────
 
 func handleGetBalance(c echo.Context) error {
@@ -122,21 +166,17 @@ func handleAdjustCandies(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	var count int
-	err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2`,
-		agent.ID, r.IdempotencyKey,
-	).Scan(&count)
-	if err == nil && count > 0 {
-		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
-	}
-
-	_, err = pool.Exec(ctx,
-		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
+	// Atomic idempotency: INSERT with ON CONFLICT to prevent race conditions
+	res, err := pool.Exec(ctx,
+		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (agent_id, idempotency_key) DO NOTHING`,
 		agent.ID, r.Delta, r.Reason, r.IdempotencyKey,
 	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
+	}
+	if res.RowsAffected() == 0 {
+		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -167,7 +207,9 @@ func handleGetHistory(c echo.Context) error {
 	for rows.Next() {
 		var e entry
 		e.AgentName = agent.Name
-		rows.Scan(&e.ID, &e.Delta, &e.Reason, &e.IdempotencyKey, &e.CreatedAt)
+		if err := rows.Scan(&e.ID, &e.Delta, &e.Reason, &e.IdempotencyKey, &e.CreatedAt); err != nil {
+			continue
+		}
 		entries = append(entries, e)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -205,6 +247,7 @@ func handleGetLeaderboard(c echo.Context) error {
 		) inv_val ON inv_val.agent_id = ab.id
 		WHERE ab.name NOT ILIKE 'test%'
 		ORDER BY total_assets DESC
+		LIMIT 100
 	`)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
@@ -220,7 +263,9 @@ func handleGetLeaderboard(c echo.Context) error {
 	lb := []item{}
 	for rows.Next() {
 		var i item
-		rows.Scan(&i.Name, &i.Balance, &i.PortfolioValue, &i.TotalAssets)
+		if err := rows.Scan(&i.Name, &i.Balance, &i.PortfolioValue, &i.TotalAssets); err != nil {
+			continue
+		}
 		lb = append(lb, i)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"leaderboard": lb})
@@ -230,6 +275,9 @@ func handleGetSummary(c echo.Context) error {
 	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	now := time.Now()
+	if loc, err := time.LoadLocation("Asia/Taipei"); err == nil {
+		now = now.In(loc)
+	}
 	weekStart := now.AddDate(0, 0, -int(now.Weekday()))
 	weekStart = time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, weekStart.Location())
 
@@ -285,21 +333,34 @@ func handleTransfer(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cannot transfer to self"})
 	}
 
-	// Check balance
-	var balance int
-	pool.QueryRow(ctx,
-		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
-	).Scan(&balance)
-	if balance < r.Amount {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "insufficient balance"})
-	}
-
-	// Transaction: insert transfer + two ledger entries
+	// Transaction: lock agent + check balance + insert transfer + two ledger entries
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer tx.Rollback(ctx)
+
+	// Lock both agent rows to prevent concurrent balance manipulation
+	// Always lock in ID order to prevent deadlocks
+	lockID1, lockID2 := agent.ID, toID
+	if lockID1 > lockID2 {
+		lockID1, lockID2 = lockID2, lockID1
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, lockID1); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, lockID2); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
+	}
+
+	// Check balance inside transaction
+	var balance int
+	tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta), 0) FROM candy_ledger WHERE agent_id = $1`, agent.ID,
+	).Scan(&balance)
+	if balance < r.Amount {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "insufficient balance"})
+	}
 
 	var transferID string
 	err = tx.QueryRow(ctx,
@@ -368,7 +429,9 @@ func handleTransferHistory(c echo.Context) error {
 	entries := []entry{}
 	for rows.Next() {
 		var e entry
-		rows.Scan(&e.ID, &e.FromAgent, &e.ToAgent, &e.Amount, &e.Reason, &e.CreatedAt)
+		if err := rows.Scan(&e.ID, &e.FromAgent, &e.ToAgent, &e.Amount, &e.Reason, &e.CreatedAt); err != nil {
+			continue
+		}
 		entries = append(entries, e)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"transfers": entries})
@@ -436,7 +499,9 @@ func handleListAgents(c echo.Context) error {
 	agents := []agentItem{}
 	for rows.Next() {
 		var a agentItem
-		rows.Scan(&a.ID, &a.Name, &a.Enabled, &a.Balance)
+		if err := rows.Scan(&a.ID, &a.Name, &a.Enabled, &a.Balance); err != nil {
+			continue
+		}
 		agents = append(agents, a)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"agents": agents})
@@ -525,7 +590,9 @@ func handleGetAgentInventory(c echo.Context) error {
 	items := []invItem{}
 	for rows.Next() {
 		var i invItem
-		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice)
+		if err := rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice, &i.SoldAt, &i.SoldPrice); err != nil {
+			continue
+		}
 		items = append(items, i)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"items": items})
@@ -571,7 +638,9 @@ func handleGetAgentHistory(c echo.Context) error {
 	for rows.Next() {
 		var e entry
 		e.AgentName = agentName
-		rows.Scan(&e.ID, &e.Delta, &e.Reason, &e.IdempotencyKey, &e.CreatedAt)
+		if err := rows.Scan(&e.ID, &e.Delta, &e.Reason, &e.IdempotencyKey, &e.CreatedAt); err != nil {
+			continue
+		}
 		entries = append(entries, e)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{

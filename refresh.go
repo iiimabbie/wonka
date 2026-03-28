@@ -74,13 +74,22 @@ func runMarketRefresh() (*refreshResult, error) {
 		return nil, fmt.Errorf("no enabled items found")
 	}
 
+	// AI call outside transaction (slow network I/O)
 	effects, eventDesc, model, aiErr := generateAIPricing(ctx, allItems)
-	pool.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
+
+	// All DB mutations in a single transaction to prevent partial state
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tx.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
 
 	var eventID string
 	if aiErr == nil && eventDesc != "" {
 		effectJSON, _ := json.Marshal(effects)
-		pool.QueryRow(ctx,
+		tx.QueryRow(ctx,
 			`INSERT INTO market_events (description, effect, model) VALUES ($1, $2, $3) RETURNING id`,
 			eventDesc, string(effectJSON), model,
 		).Scan(&eventID)
@@ -100,25 +109,37 @@ func runMarketRefresh() (*refreshResult, error) {
 		if delta > 0.5 {
 			delta = 0.5
 		}
+		if delta < -0.5 {
+			delta = -0.5
+		}
 		price := int(math.Max(1, math.Round(float64(item.AnchorPrice)*(1+delta))))
+		// Price floor: never drop below 30% of anchor
+		minPrice := int(math.Max(1, math.Round(float64(item.AnchorPrice)*0.3)))
+		if price < minPrice {
+			price = minPrice
+		}
 
 		if eventID != "" {
-			pool.Exec(ctx,
+			tx.Exec(ctx,
 				`INSERT INTO market_listings (item_id, price, event_id, expired, expires_at) VALUES ($1, $2, $3, false, $4)`,
 				item.ID, price, eventID, expiresAt,
 			)
 		} else {
-			pool.Exec(ctx,
+			tx.Exec(ctx,
 				`INSERT INTO market_listings (item_id, price, expired, expires_at) VALUES ($1, $2, false, $3)`,
 				item.ID, price, expiresAt,
 			)
 		}
-		pool.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, item.ID, price)
+		tx.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, item.ID, price)
 		res.Listings = append(res.Listings, struct {
 			Name  string  `json:"name"`
 			Price int     `json:"price"`
 			Delta float64 `json:"delta"`
 		}{item.Name, price, delta})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
 	res.Count = len(res.Listings)
@@ -255,7 +276,13 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 
 	if totalTrades == 0 {
 		// No trades: apply gentle decay toward anchor_price (2% per hour)
-		pool.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin tx: %w", err)
+		}
+		defer tx.Rollback(ctx)
+
+		tx.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
 		expiresAt := time.Now().Add(90 * time.Minute)
 		for _, v := range volItems {
 			cur := float64(v.CurrentPrice)
@@ -264,11 +291,11 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 			if newPrice < 1 {
 				newPrice = 1
 			}
-			pool.Exec(ctx,
+			tx.Exec(ctx,
 				`INSERT INTO market_listings (item_id, price, expired, expires_at) VALUES ($1, $2, false, $3)`,
 				v.ID, newPrice, expiresAt,
 			)
-			pool.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, v.ID, newPrice)
+			tx.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, v.ID, newPrice)
 			delta := float64(newPrice-v.CurrentPrice) / float64(v.CurrentPrice)
 			res.Listings = append(res.Listings, struct {
 				Name  string  `json:"name"`
@@ -276,15 +303,26 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 				Delta float64 `json:"delta"`
 			}{v.Name, newPrice, delta})
 		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit tx: %w", err)
+		}
 		res.Count = len(res.Listings)
 		res.Event = "（無交易，價格緩慢回歸）"
 		return res, nil
 	}
 
-	// Has trades: ask AI to adjust prices based on volume
+	// Has trades: ask AI to adjust prices based on volume (outside transaction)
 	effects, _, aiModel, aiErr := generateHourlyPricing(ctx, volItems, latestEvent)
 
-	pool.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
+	// DB mutations in a single transaction
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tx.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
 	expiresAt := time.Now().Add(90 * time.Minute)
 
 	for _, v := range volItems {
@@ -311,17 +349,21 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 			newPrice = int(math.Max(1, math.Round(float64(v.CurrentPrice)*(1+delta))))
 		}
 
-		pool.Exec(ctx,
+		tx.Exec(ctx,
 			`INSERT INTO market_listings (item_id, price, expired, expires_at) VALUES ($1, $2, false, $3)`,
 			v.ID, newPrice, expiresAt,
 		)
-		pool.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, v.ID, newPrice)
+		tx.Exec(ctx, `INSERT INTO market_price_history (item_id, price) VALUES ($1, $2)`, v.ID, newPrice)
 		delta := float64(newPrice-v.CurrentPrice) / math.Max(1, float64(v.CurrentPrice))
 		res.Listings = append(res.Listings, struct {
 			Name  string  `json:"name"`
 			Price int     `json:"price"`
 			Delta float64 `json:"delta"`
 		}{v.Name, newPrice, delta})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
 	res.Count = len(res.Listings)
@@ -368,16 +410,6 @@ func updateAnchorPrices(ctx context.Context) error {
 		pool.Exec(ctx, `UPDATE market_items SET anchor_price = $1 WHERE id = $2`, newAnchor, id)
 	}
 	return nil
-}
-
-func pickRandomItems[T any](items []T, n int) []T {
-	if len(items) <= n {
-		return items
-	}
-	cp := make([]T, len(items))
-	copy(cp, items)
-	rand.Shuffle(len(cp), func(i, j int) { cp[i], cp[j] = cp[j], cp[i] })
-	return cp[:n]
 }
 
 // ── AI Pricing (daily) ───────────────────────────────────────────────────────
@@ -468,41 +500,72 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 		evtRows.Close()
 	}
 
+	// Batch: get all recent prices (last 10 per item)
+	priceMap := map[string][]int{}
+	phRows, _ := pool.Query(ctx, `
+		SELECT item_id, price FROM (
+			SELECT item_id, price, ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY refreshed_at DESC) AS rn
+			FROM market_price_history
+		) sub WHERE rn <= 10
+		ORDER BY item_id, rn
+	`)
+	if phRows != nil {
+		for phRows.Next() {
+			var id string
+			var p int
+			phRows.Scan(&id, &p)
+			priceMap[id] = append(priceMap[id], p)
+		}
+		phRows.Close()
+	}
+
+	// Batch: get 7-day average prices
+	avgMap := map[string]float64{}
+	avgRows, _ := pool.Query(ctx, `
+		SELECT item_id, AVG(price) FROM market_price_history
+		WHERE refreshed_at >= now() - interval '7 days'
+		GROUP BY item_id
+	`)
+	if avgRows != nil {
+		for avgRows.Next() {
+			var id string
+			var avg float64
+			avgRows.Scan(&id, &avg)
+			avgMap[id] = avg
+		}
+		avgRows.Close()
+	}
+
+	// Batch: get 3-day buy counts
+	buyCountMap := map[string]int{}
+	buyRows, _ := pool.Query(ctx, `
+		SELECT item_id, COUNT(*) FROM inventories
+		WHERE acquired_at >= now() - interval '3 days'
+		GROUP BY item_id
+	`)
+	if buyRows != nil {
+		for buyRows.Next() {
+			var id string
+			var count int
+			buyRows.Scan(&id, &count)
+			buyCountMap[id] = count
+		}
+		buyRows.Close()
+	}
+
 	var itemList []aiItem
 	for _, item := range items {
 		info := aiItem{
 			Name: item.Name,
 			Type: item.ItemType,
 		}
-		// 7-day average price (what AI sees instead of anchor)
-		var avg7d float64
-		pool.QueryRow(ctx,
-			`SELECT COALESCE(AVG(price), 0) FROM market_price_history WHERE item_id = $1 AND refreshed_at >= now() - interval '7 days'`,
-			item.ID,
-		).Scan(&avg7d)
-		if avg7d > 0 {
-			info.AvgPrice7d = int(math.Round(avg7d))
+		if avg, ok := avgMap[item.ID]; ok && avg > 0 {
+			info.AvgPrice7d = int(math.Round(avg))
 		} else {
-			info.AvgPrice7d = item.AnchorPrice // fallback for new items with no history
+			info.AvgPrice7d = item.AnchorPrice
 		}
-		phRows, _ := pool.Query(ctx,
-			`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 10`,
-			item.ID,
-		)
-		if phRows != nil {
-			for phRows.Next() {
-				var p int
-				phRows.Scan(&p)
-				info.History = append(info.History, p)
-			}
-			phRows.Close()
-		}
-		var buyCount int
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '3 days'`,
-			item.ID,
-		).Scan(&buyCount)
-		info.RecentBuys = buyCount
+		info.History = priceMap[item.ID]
+		info.RecentBuys = buyCountMap[item.ID]
 		itemList = append(itemList, info)
 	}
 
