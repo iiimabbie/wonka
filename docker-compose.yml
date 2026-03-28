@@ -7,7 +7,7 @@ services:
       - "8090:8090"
     environment:
       - TZ=Asia/Taipei
-      - DATABASE_URL=postgres://wonka:fyPP6S1LTdb5JyAaWvsF8JEFPyPJmFdF@shared-postgres.home-infra.weii.cloud:5432/wonka
+      - DATABASE_URL=${DATABASE_URL}
       - JWT_SECRET=${JWT_SECRET:-changeme-please}
       - WONKA_ADMIN_KEY=${WONKA_ADMIN_KEY:-}
       - WONKA_AI_BASE_URL=${WONKA_AI_BASE_URL:-}
