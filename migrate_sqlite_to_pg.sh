@@ -10,7 +10,7 @@ if [ -z "$DB" ]; then
   exit 1
 fi
 
-PG_URL="${DATABASE_URL:-postgres://wonka:fyPP6S1LTdb5JyAaWvsF8JEFPyPJmFdF@shared-postgres.home-infra.weii.cloud:5432/wonka}"
+PG_URL="${DATABASE_URL:?DATABASE_URL is required}"
 
 echo "=== Wonka SQLite → PostgreSQL Migration ==="
 echo "Source: $DB"
