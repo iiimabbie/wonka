@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -142,7 +143,11 @@ func runMarketRefresh() (*refreshResult, error) {
 	}
 
 	// After daily refresh: update anchor_price toward 7-day avg
-	go updateAnchorPrices(ctx)
+	go func() {
+		if err := updateAnchorPrices(ctx); err != nil {
+			log.Printf("⚠️ Failed to update anchor prices: %v", err)
+		}
+	}()
 
 	return res, nil
 }
@@ -260,7 +265,7 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 	if totalTrades == 0 {
 		// No trades: apply gentle decay toward anchor_price (2% per hour)
 		pool.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
-		expiresAt := time.Now().Add(1 * time.Hour)
+		expiresAt := time.Now().Add(90 * time.Minute)
 		for _, v := range volItems {
 			cur := float64(v.CurrentPrice)
 			anchor := float64(v.AnchorPrice)
@@ -289,7 +294,7 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 	effects, _, aiModel, aiErr := generateHourlyPricing(ctx, volItems, latestEvent)
 
 	pool.Exec(ctx, `UPDATE market_listings SET expired = true WHERE expired = false`)
-	expiresAt := time.Now().Add(1 * time.Hour)
+	expiresAt := time.Now().Add(90 * time.Minute)
 
 	for _, v := range volItems {
 		var newPrice int
@@ -338,10 +343,10 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 }
 
 // updateAnchorPrices: after daily refresh, update anchor_price toward 7-day avg
-func updateAnchorPrices(ctx context.Context) {
-	rows, _ := pool.Query(ctx, `SELECT id FROM market_items WHERE enabled = true`)
-	if rows == nil {
-		return
+func updateAnchorPrices(ctx context.Context) error {
+	rows, err := pool.Query(ctx, `SELECT id FROM market_items WHERE enabled = true`)
+	if err != nil {
+		return fmt.Errorf("query items: %w", err)
 	}
 	var ids []string
 	for rows.Next() {
@@ -371,6 +376,7 @@ func updateAnchorPrices(ctx context.Context) {
 		}
 		pool.Exec(ctx, `UPDATE market_items SET anchor_price = $1 WHERE id = $2`, newAnchor, id)
 	}
+	return nil
 }
 
 func pickRandomItems[T any](items []T, n int) []T {

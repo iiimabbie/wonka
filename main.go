@@ -143,6 +143,13 @@ func main() {
 	e.POST("/v1/market/hourly-refresh", handleHourlyRefresh)
 	e.GET("/v1/market/snapshot", handleMarketSnapshot, agentAuthMiddleware)
 
+	// Deprecated routes → explicit 404
+	gone := func(c echo.Context) error {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "removed, use /v1/market/snapshot instead"})
+	}
+	e.GET("/v1/market/items", gone)
+	e.GET("/v1/market/volume", gone)
+
 	// ── Inventory (agent-key) ────────────────────────────────────────────────
 	e.GET("/v1/inventory", handleInventory, agentAuthMiddleware)
 	e.GET("/v1/inventory/history", handleInventoryHistory, agentAuthMiddleware)

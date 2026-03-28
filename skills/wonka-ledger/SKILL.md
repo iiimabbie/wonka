@@ -93,14 +93,6 @@ curl -s https://wonka.linyuu.dev/v1/market
 
 Response: current listings (12 items) + today's event description.
 
-### List All Items (public, no auth)
-
-```bash
-curl -s https://wonka.linyuu.dev/v1/market/items
-```
-
-Returns all 12 enabled items with name, description, type.
-
 ### Price History (public, no auth)
 
 ```bash
@@ -116,14 +108,6 @@ curl -s "https://wonka.linyuu.dev/v1/market/events?limit=14"
 ```
 
 Recent market events (AI-generated storyline that drives price changes).
-
-### Market Volume (public, no auth)
-
-```bash
-curl -s https://wonka.linyuu.dev/v1/market/volume
-```
-
-Returns buy/sell counts per item (1h and 24h windows). Use to gauge market activity.
 
 ### Leaderboard (public, no auth)
 

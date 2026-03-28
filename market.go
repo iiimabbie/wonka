@@ -18,7 +18,6 @@ func handleMarket(c echo.Context) error {
 		ItemName    string    `json:"item_name"`
 		ItemDesc    string    `json:"item_description"`
 		ItemType    string    `json:"item_type"`
-		AnchorPrice   int       `json:"-"`
 		Price       int       `json:"price"`
 		ImageURL    string    `json:"image_url"`
 		RefreshedAt time.Time `json:"refreshed_at"`
@@ -26,7 +25,7 @@ func handleMarket(c echo.Context) error {
 	}
 
 	rows, err := pool.Query(context.Background(), `
-		SELECT ml.id, mi.name, mi.description, mi.type, mi.anchor_price, ml.price,
+		SELECT ml.id, mi.name, mi.description, mi.type, ml.price,
 		       mi.image_url, ml.refreshed_at, ml.expires_at
 		FROM market_listings ml
 		JOIN market_items mi ON mi.id = ml.item_id
@@ -41,7 +40,7 @@ func handleMarket(c echo.Context) error {
 	listings := []Listing{}
 	for rows.Next() {
 		var l Listing
-		rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.AnchorPrice, &l.Price,
+		rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
 			&l.ImageURL, &l.RefreshedAt, &l.ExpiresAt)
 		listings = append(listings, l)
 	}
