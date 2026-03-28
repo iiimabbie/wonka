@@ -99,7 +99,20 @@ func main() {
 
 	// Ensure settings row exists
 	_, err = pool.Exec(context.Background(),
+	// Seed default settings (empty, will be filled via ENV at startup or manual update)
+	pool.Exec(ctx,
 		`INSERT INTO settings (ai_base_url, ai_model, ai_api_key) SELECT '', '', '' WHERE NOT EXISTS (SELECT 1 FROM settings)`)
+
+	// Overwrite settings from env if provided
+	if os.Getenv("WONKA_AI_BASE_URL") != "" {
+		pool.Exec(ctx, `UPDATE settings SET ai_base_url = $1`, os.Getenv("WONKA_AI_BASE_URL"))
+	}
+	if os.Getenv("WONKA_AI_MODEL") != "" {
+		pool.Exec(ctx, `UPDATE settings SET ai_model = $1`, os.Getenv("WONKA_AI_MODEL"))
+	}
+	if os.Getenv("WONKA_AI_API_KEY") != "" {
+		pool.Exec(ctx, `UPDATE settings SET ai_api_key = $1`, os.Getenv("WONKA_AI_API_KEY"))
+	}
 	if err != nil {
 		log.Printf("Warning: failed to ensure settings row: %v", err)
 	}

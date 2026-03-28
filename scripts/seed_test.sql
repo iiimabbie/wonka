@@ -48,7 +48,7 @@ INSERT INTO market_items (name, description, type, anchor_price, image_url, enab
 ON CONFLICT (name) DO NOTHING;
 
 -- AI settings
--- Test AI config (fake key, won't call real API in tests)
+-- Test AI config placeholder (actual values will be overwritten by ENV in main.go)
 INSERT INTO settings (ai_base_url, ai_model, ai_api_key)
-SELECT 'https://proxy.linyuu.dev/v1', 'gemini-3-flash-preview', 'test-fake-ai-key'
+SELECT '', '', ''
 WHERE NOT EXISTS (SELECT 1 FROM settings);
