@@ -1,0 +1,53 @@
+services:
+  postgres-test:
+    image: postgres:17-alpine
+    container_name: wonka-postgres-test
+    environment:
+      POSTGRES_DB: wonka_test
+      POSTGRES_USER: wonka
+      POSTGRES_PASSWORD: test123
+    ports:
+      - "5433:5432"
+    volumes:
+      - wonka-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wonka -d wonka_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  wonka-test:
+    build: .
+    container_name: wonka-test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      - TZ=Asia/Taipei
+      - DATABASE_URL=postgres://wonka:test123@postgres-test:5432/wonka_test?sslmode=disable
+      - JWT_SECRET=test-jwt-secret-wonka-2026
+      - WONKA_ADMIN_KEY=test-admin-key
+      - WONKA_AI_BASE_URL=https://proxy.linyuu.dev/v1
+      - WONKA_AI_MODEL=gemini-3-flash-preview
+      - WONKA_AI_API_KEY=${WONKA_AI_API_KEY:-test-fake-key}
+    ports:
+      - "8091:8090"
+
+  wonka-integration-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: wonka-integration-test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      - TZ=Asia/Taipei
+      - DATABASE_URL=postgres://wonka:test123@postgres-test:5432/wonka_test?sslmode=disable
+      - JWT_SECRET=test-jwt-secret-wonka-2026
+      - WONKA_ADMIN_KEY=test-admin-key
+    profiles:
+      - test
+
+volumes:
+  wonka-test-data:
