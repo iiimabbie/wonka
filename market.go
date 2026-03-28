@@ -451,3 +451,211 @@ func handleMarketEvents(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"events": events})
 }
+
+// ── GET /v1/market/volume (public) ───────────────────────────────────────────
+
+func handleMarketVolume(c echo.Context) error {
+	ctx := context.Background()
+	type vol struct {
+		ItemName string `json:"item_name"`
+		Buy1h    int    `json:"buy_1h"`
+		Sell1h   int    `json:"sell_1h"`
+		Buy24h   int    `json:"buy_24h"`
+		Sell24h  int    `json:"sell_24h"`
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT id, name FROM market_items WHERE enabled = true ORDER BY name`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
+	defer rows.Close()
+
+	var result []vol
+	type idName struct{ ID, Name string }
+	var items []idName
+	for rows.Next() {
+		var i idName
+		rows.Scan(&i.ID, &i.Name)
+		items = append(items, i)
+	}
+
+	for _, item := range items {
+		var v vol
+		v.ItemName = item.Name
+		pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '1 hour'`,
+			item.ID).Scan(&v.Buy1h)
+		pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '1 hour'`,
+			item.ID).Scan(&v.Sell1h)
+		pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '24 hours'`,
+			item.ID).Scan(&v.Buy24h)
+		pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '24 hours'`,
+			item.ID).Scan(&v.Sell24h)
+		result = append(result, v)
+	}
+
+	if result == nil {
+		result = []vol{}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"volume": result})
+}
+
+// ── GET /v1/market/snapshot (agent-key auth) ─────────────────────────────────
+
+func handleMarketSnapshot(c echo.Context) error {
+	ctx := context.Background()
+	agent := c.Get("agent").(*Agent)
+
+	// 1. Balance
+	var balance int
+	pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(delta), 0) FROM candy_ledger WHERE agent_id = $1`, agent.ID,
+	).Scan(&balance)
+
+	// 2. Inventory
+	type invItem struct {
+		ID            string    `json:"id"`
+		ItemName      string    `json:"item_name"`
+		ItemType      string    `json:"item_type"`
+		AcquiredAt    time.Time `json:"acquired_at"`
+		AcquiredPrice int       `json:"acquired_price"`
+	}
+	invRows, err := pool.Query(ctx, `
+		SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price
+		FROM inventories inv
+		JOIN market_items mi ON mi.id = inv.item_id
+		WHERE inv.agent_id = $1 AND inv.sold_at IS NULL
+		ORDER BY inv.acquired_at DESC
+	`, agent.ID)
+	var inventory []invItem
+	if err == nil {
+		defer invRows.Close()
+		for invRows.Next() {
+			var i invItem
+			invRows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice)
+			inventory = append(inventory, i)
+		}
+	}
+	if inventory == nil {
+		inventory = []invItem{}
+	}
+
+	// 3. Listings with change_pct, volume, recent_prices
+	type snapshotListing struct {
+		ID           string     `json:"id"`
+		ItemName     string     `json:"item_name"`
+		ItemDesc     string     `json:"item_description"`
+		ItemType     string     `json:"item_type"`
+		Price        int        `json:"price"`
+		ChangePct    float64    `json:"change_pct"`
+		RecentPrices []int      `json:"recent_prices"`
+		Buy1h        int        `json:"buy_1h"`
+		Sell1h       int        `json:"sell_1h"`
+		Buy24h       int        `json:"buy_24h"`
+		Sell24h      int        `json:"sell_24h"`
+		RefreshedAt  time.Time  `json:"refreshed_at"`
+		ExpiresAt    *time.Time `json:"expires_at"`
+	}
+
+	listRows, err := pool.Query(ctx, `
+		SELECT ml.id, mi.id, mi.name, mi.description, mi.type, ml.price,
+		       ml.refreshed_at, ml.expires_at
+		FROM market_listings ml
+		JOIN market_items mi ON mi.id = ml.item_id
+		WHERE ml.expired = false
+		ORDER BY ml.price DESC
+	`)
+	var listings []snapshotListing
+	if err == nil {
+		defer listRows.Close()
+		for listRows.Next() {
+			var l snapshotListing
+			var itemID string
+			listRows.Scan(&l.ID, &itemID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
+				&l.RefreshedAt, &l.ExpiresAt)
+
+			// Recent prices (last 10)
+			phRows, _ := pool.Query(ctx,
+				`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 10`,
+				itemID)
+			if phRows != nil {
+				for phRows.Next() {
+					var p int
+					phRows.Scan(&p)
+					l.RecentPrices = append(l.RecentPrices, p)
+				}
+				phRows.Close()
+			}
+			if l.RecentPrices == nil {
+				l.RecentPrices = []int{}
+			}
+
+			// change_pct vs previous price
+			if len(l.RecentPrices) >= 2 {
+				prev := l.RecentPrices[1]
+				if prev > 0 {
+					l.ChangePct = float64(l.Price-prev) / float64(prev)
+				}
+			}
+
+			// Volume
+			pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '1 hour'`,
+				itemID).Scan(&l.Buy1h)
+			pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '1 hour'`,
+				itemID).Scan(&l.Sell1h)
+			pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '24 hours'`,
+				itemID).Scan(&l.Buy24h)
+			pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '24 hours'`,
+				itemID).Scan(&l.Sell24h)
+
+			listings = append(listings, l)
+		}
+	}
+	if listings == nil {
+		listings = []snapshotListing{}
+	}
+
+	// 4. Latest event + recent events
+	type eventInfo struct {
+		Description string    `json:"description"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	var latestEvent *eventInfo
+	var le eventInfo
+	if pool.QueryRow(ctx,
+		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT 1`,
+	).Scan(&le.Description, &le.CreatedAt) == nil {
+		latestEvent = &le
+	}
+
+	evtRows, _ := pool.Query(ctx,
+		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT 5`)
+	var recentEvents []eventInfo
+	if evtRows != nil {
+		for evtRows.Next() {
+			var e eventInfo
+			evtRows.Scan(&e.Description, &e.CreatedAt)
+			recentEvents = append(recentEvents, e)
+		}
+		evtRows.Close()
+	}
+	if recentEvents == nil {
+		recentEvents = []eventInfo{}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"balance":       balance,
+		"inventory":     inventory,
+		"listings":      listings,
+		"event":         latestEvent,
+		"recent_events": recentEvents,
+	})
+}
