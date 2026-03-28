@@ -122,13 +122,21 @@ func handleAdjustCandies(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	_, err := pool.Exec(ctx,
-		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (agent_id, idempotency_key) DO NOTHING`,
+	var count int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2`,
+		agent.ID, r.IdempotencyKey,
+	).Scan(&count)
+	if err == nil && count > 0 {
+		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
+	}
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
 		agent.ID, r.Delta, r.Reason, r.IdempotencyKey,
 	)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
