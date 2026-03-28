@@ -175,7 +175,7 @@ func handleGetLeaderboard(c echo.Context) error {
 		LEFT JOIN (
 			SELECT
 				inv.agent_id,
-				SUM(COALESCE(ml.price, mi.base_price)) AS portfolio_value
+				SUM(COALESCE(ml.price, mi.anchor_price)) AS portfolio_value
 			FROM inventories inv
 			JOIN market_items mi ON mi.id = inv.item_id
 			LEFT JOIN LATERAL (

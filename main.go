@@ -141,6 +141,7 @@ func main() {
 	e.GET("/v1/market/prices", handlePriceHistory)
 	e.GET("/v1/market/events", handleMarketEvents)
 	e.POST("/v1/market/refresh", handleMarketRefresh)
+	e.POST("/v1/market/hourly-refresh", handleHourlyRefresh)
 
 	// ── Inventory (agent-key) ────────────────────────────────────────────────
 	e.GET("/v1/inventory", handleInventory, agentAuthMiddleware)
@@ -158,12 +159,11 @@ func main() {
 	admin.GET("/settings", handleAdminGetSettings)
 	admin.PUT("/settings", handleAdminPutSettings)
 
-	// Internal market refresh scheduler: 08:00 and 20:00 Asia/Taipei
+	// Internal market refresh scheduler: 08:00 and 20:00 Asia/Taipei (event + price)
 	go func() {
 		loc, _ := time.LoadLocation("Asia/Taipei")
 		for {
 			now := time.Now().In(loc)
-			// next 08:00 or 20:00
 			next8 := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, loc)
 			next20 := time.Date(now.Year(), now.Month(), now.Day(), 20, 0, 0, 0, loc)
 			if now.After(next8) {
@@ -177,13 +177,48 @@ func main() {
 				nextRun = next20
 			}
 			wait := time.Until(nextRun)
-			log.Printf("📅 Next market refresh scheduled in %v (at %s)", wait.Round(time.Second), nextRun.Format("2006-01-02 15:04:05 MST"))
+			log.Printf("📅 Next daily market refresh scheduled in %v (at %s)", wait.Round(time.Second), nextRun.Format("2006-01-02 15:04:05 MST"))
 			time.Sleep(wait)
-			log.Println("🔄 Triggering scheduled market refresh...")
+			log.Println("🔄 Triggering daily market refresh...")
 			if res, err := runMarketRefresh(); err != nil {
-				log.Printf("⚠️ Scheduled market refresh error: %v", err)
+				log.Printf("⚠️ Daily market refresh error: %v", err)
 			} else {
-				log.Printf("✅ Scheduled market refresh complete: %d items, ai_fallback=%v", res.Count, res.AIFallback)
+				log.Printf("✅ Daily market refresh complete: %d items, ai_fallback=%v", res.Count, res.AIFallback)
+			}
+		}
+	}()
+
+	// Hourly price refresh scheduler (volume-driven, no new event)
+	go func() {
+		loc, _ := time.LoadLocation("Asia/Taipei")
+		for {
+			now := time.Now().In(loc)
+			// Skip if we're within 5 min of a daily refresh (08:00 or 20:00)
+			h, m := now.Hour(), now.Minute()
+			isDailyWindow := (h == 8 || h == 20) && m < 5
+			if isDailyWindow {
+				time.Sleep(10 * time.Minute)
+				continue
+			}
+			// Next hour mark
+			nextHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour()+1, 0, 0, 0, loc)
+			wait := time.Until(nextHour)
+			log.Printf("⏰ Next hourly price refresh in %v", wait.Round(time.Second))
+			time.Sleep(wait)
+
+			// Re-check daily window after sleep
+			now = time.Now().In(loc)
+			h, m = now.Hour(), now.Minute()
+			if (h == 8 || h == 20) && m < 10 {
+				log.Println("⏭️ Skipping hourly refresh (daily refresh window)")
+				continue
+			}
+
+			log.Println("⏱️ Triggering hourly price refresh...")
+			if res, err := runHourlyPriceRefresh(); err != nil {
+				log.Printf("⚠️ Hourly price refresh error: %v", err)
+			} else {
+				log.Printf("✅ Hourly price refresh complete: %d items, fallback=%v", res.Count, res.AIFallback)
 			}
 		}
 	}()

@@ -17,7 +17,7 @@ func handleMarket(c echo.Context) error {
 		ItemName    string    `json:"item_name"`
 		ItemDesc    string    `json:"item_description"`
 		ItemType    string    `json:"item_type"`
-		BasePrice   int       `json:"base_price"`
+		AnchorPrice   int       `json:"-"`
 		Price       int       `json:"price"`
 		ImageURL    string    `json:"image_url"`
 		RefreshedAt time.Time `json:"refreshed_at"`
@@ -25,7 +25,7 @@ func handleMarket(c echo.Context) error {
 	}
 
 	rows, err := pool.Query(context.Background(), `
-		SELECT ml.id, mi.name, mi.description, mi.type, mi.base_price, ml.price,
+		SELECT ml.id, mi.name, mi.description, mi.type, mi.anchor_price, ml.price,
 		       mi.image_url, ml.refreshed_at, ml.expires_at
 		FROM market_listings ml
 		JOIN market_items mi ON mi.id = ml.item_id
@@ -40,7 +40,7 @@ func handleMarket(c echo.Context) error {
 	listings := []Listing{}
 	for rows.Next() {
 		var l Listing
-		rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.BasePrice, &l.Price,
+		rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.AnchorPrice, &l.Price,
 			&l.ImageURL, &l.RefreshedAt, &l.ExpiresAt)
 		listings = append(listings, l)
 	}
@@ -196,7 +196,7 @@ func handleMarketSell(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "item already sold"})
 	}
 
-	// Sell price: current listing price if available, else base_price
+	// Sell price: current listing price if available, else anchor_price
 	var sellPrice int
 	err = pool.QueryRow(context.Background(), `
 		SELECT ml.price FROM market_listings ml
@@ -204,9 +204,9 @@ func handleMarketSell(c echo.Context) error {
 		ORDER BY ml.refreshed_at DESC LIMIT 1
 	`, itemID).Scan(&sellPrice)
 	if err != nil {
-		// fallback to base_price
+		// fallback to anchor_price
 		pool.QueryRow(context.Background(),
-			`SELECT base_price FROM market_items WHERE id = $1`, itemID,
+			`SELECT anchor_price FROM market_items WHERE id = $1`, itemID,
 		).Scan(&sellPrice)
 	}
 
@@ -344,10 +344,10 @@ func handleMarketItems(c echo.Context) error {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Type        string `json:"type"`
-		BasePrice   int    `json:"base_price"`
+		AnchorPrice   int    `json:"-"`
 	}
 	rows, err := pool.Query(context.Background(),
-		`SELECT id, name, description, type, base_price FROM market_items WHERE enabled = true ORDER BY name`,
+		`SELECT id, name, description, type, anchor_price FROM market_items WHERE enabled = true ORDER BY name`,
 	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
@@ -357,7 +357,7 @@ func handleMarketItems(c echo.Context) error {
 	items := []item{}
 	for rows.Next() {
 		var i item
-		rows.Scan(&i.ID, &i.Name, &i.Description, &i.Type, &i.BasePrice)
+		rows.Scan(&i.ID, &i.Name, &i.Description, &i.Type, &i.AnchorPrice)
 		items = append(items, i)
 	}
 	return c.JSON(http.StatusOK, map[string]interface{}{"items": items})
