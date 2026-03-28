@@ -175,14 +175,18 @@ func handleGetLeaderboard(c echo.Context) error {
 		LEFT JOIN (
 			SELECT
 				inv.agent_id,
-				SUM(COALESCE(ml.price, mi.anchor_price)) AS portfolio_value
+				SUM(COALESCE(ml.price, ph.price, 1)) AS portfolio_value
 			FROM inventories inv
-			JOIN market_items mi ON mi.id = inv.item_id
 			LEFT JOIN LATERAL (
 				SELECT price FROM market_listings
 				WHERE item_id = inv.item_id AND expired = false
 				ORDER BY refreshed_at DESC LIMIT 1
 			) ml ON true
+			LEFT JOIN LATERAL (
+				SELECT price FROM market_price_history
+				WHERE item_id = inv.item_id
+				ORDER BY refreshed_at DESC LIMIT 1
+			) ph ON ml.price IS NULL
 			WHERE inv.sold_at IS NULL
 			GROUP BY inv.agent_id
 		) inv_val ON inv_val.agent_id = ab.id

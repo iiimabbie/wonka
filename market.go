@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -196,7 +197,7 @@ func handleMarketSell(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "item already sold"})
 	}
 
-	// Sell price: current listing price if available, else anchor_price
+	// Sell price: current listing → last price history → 1 (absolute fallback)
 	var sellPrice int
 	err = pool.QueryRow(context.Background(), `
 		SELECT ml.price FROM market_listings ml
@@ -204,10 +205,13 @@ func handleMarketSell(c echo.Context) error {
 		ORDER BY ml.refreshed_at DESC LIMIT 1
 	`, itemID).Scan(&sellPrice)
 	if err != nil {
-		// fallback to anchor_price
-		pool.QueryRow(context.Background(),
-			`SELECT anchor_price FROM market_items WHERE id = $1`, itemID,
+		// fallback to most recent price history
+		err2 := pool.QueryRow(context.Background(),
+			`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 1`, itemID,
 		).Scan(&sellPrice)
+		if err2 != nil {
+			sellPrice = 1 // absolute fallback
+		}
 	}
 
 	// Transaction: credit + mark sold
@@ -393,33 +397,6 @@ func handleInventoryHistory(c echo.Context) error {
 	})
 }
 
-// ── GET /v1/market/items ─────────────────────────────────────────────────────
-
-func handleMarketItems(c echo.Context) error {
-	type item struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Type        string `json:"type"`
-		AnchorPrice   int    `json:"-"`
-	}
-	rows, err := pool.Query(context.Background(),
-		`SELECT id, name, description, type, anchor_price FROM market_items WHERE enabled = true ORDER BY name`,
-	)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
-	}
-	defer rows.Close()
-
-	items := []item{}
-	for rows.Next() {
-		var i item
-		rows.Scan(&i.ID, &i.Name, &i.Description, &i.Type, &i.AnchorPrice)
-		items = append(items, i)
-	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"items": items})
-}
-
 // ── GET /v1/market/prices ────────────────────────────────────────────────────
 
 func handlePriceHistory(c echo.Context) error {
@@ -509,58 +486,6 @@ func handleMarketEvents(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{"events": events})
 }
 
-// ── GET /v1/market/volume (public) ───────────────────────────────────────────
-
-func handleMarketVolume(c echo.Context) error {
-	ctx := context.Background()
-	type vol struct {
-		ItemName string `json:"item_name"`
-		Buy1h    int    `json:"buy_1h"`
-		Sell1h   int    `json:"sell_1h"`
-		Buy24h   int    `json:"buy_24h"`
-		Sell24h  int    `json:"sell_24h"`
-	}
-
-	rows, err := pool.Query(ctx,
-		`SELECT id, name FROM market_items WHERE enabled = true ORDER BY name`)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
-	}
-	defer rows.Close()
-
-	var result []vol
-	type idName struct{ ID, Name string }
-	var items []idName
-	for rows.Next() {
-		var i idName
-		rows.Scan(&i.ID, &i.Name)
-		items = append(items, i)
-	}
-
-	for _, item := range items {
-		var v vol
-		v.ItemName = item.Name
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '1 hour'`,
-			item.ID).Scan(&v.Buy1h)
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '1 hour'`,
-			item.ID).Scan(&v.Sell1h)
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '24 hours'`,
-			item.ID).Scan(&v.Buy24h)
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '24 hours'`,
-			item.ID).Scan(&v.Sell24h)
-		result = append(result, v)
-	}
-
-	if result == nil {
-		result = []vol{}
-	}
-	return c.JSON(http.StatusOK, map[string]interface{}{"volume": result})
-}
-
 // ── GET /v1/market/snapshot (agent-key auth) ─────────────────────────────────
 
 func handleMarketSnapshot(c echo.Context) error {
@@ -609,6 +534,52 @@ func handleMarketSnapshot(c echo.Context) error {
 		ExpiresAt    *time.Time `json:"expires_at"`
 	}
 
+	// Batch: get all volume data in one query
+	type volData struct {
+		Buy1h, Sell1h, Buy24h, Sell24h int
+	}
+	volMap := map[string]*volData{}
+	volRows, _ := pool.Query(ctx, `
+		SELECT item_id,
+			COUNT(*) FILTER (WHERE acquired_at >= now() - interval '1 hour') AS buy_1h,
+			COUNT(*) FILTER (WHERE sold_at >= now() - interval '1 hour') AS sell_1h,
+			COUNT(*) FILTER (WHERE acquired_at >= now() - interval '24 hours') AS buy_24h,
+			COUNT(*) FILTER (WHERE sold_at >= now() - interval '24 hours') AS sell_24h
+		FROM inventories GROUP BY item_id
+	`)
+	if volRows != nil {
+		for volRows.Next() {
+			var id string
+			var v volData
+			volRows.Scan(&id, &v.Buy1h, &v.Sell1h, &v.Buy24h, &v.Sell24h)
+			volMap[id] = &v
+		}
+		volRows.Close()
+	}
+
+	// Batch: get all recent prices (last 10 per item) using window function
+	type pricePoint struct {
+		ItemID string
+		Price  int
+	}
+	priceMap := map[string][]int{}
+	priceRows, _ := pool.Query(ctx, `
+		SELECT item_id, price FROM (
+			SELECT item_id, price, ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY refreshed_at DESC) AS rn
+			FROM market_price_history
+		) sub WHERE rn <= 10
+		ORDER BY item_id, rn
+	`)
+	if priceRows != nil {
+		for priceRows.Next() {
+			var pp pricePoint
+			priceRows.Scan(&pp.ItemID, &pp.Price)
+			priceMap[pp.ItemID] = append(priceMap[pp.ItemID], pp.Price)
+		}
+		priceRows.Close()
+	}
+
+	// Now build listings with pre-fetched data
 	listRows, err := pool.Query(ctx, `
 		SELECT ml.id, mi.id, mi.name, mi.description, mi.type, ml.price,
 		       ml.refreshed_at, ml.expires_at
@@ -626,18 +597,8 @@ func handleMarketSnapshot(c echo.Context) error {
 			listRows.Scan(&l.ID, &itemID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
 				&l.RefreshedAt, &l.ExpiresAt)
 
-			// Recent prices (last 10)
-			phRows, _ := pool.Query(ctx,
-				`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 10`,
-				itemID)
-			if phRows != nil {
-				for phRows.Next() {
-					var p int
-					phRows.Scan(&p)
-					l.RecentPrices = append(l.RecentPrices, p)
-				}
-				phRows.Close()
-			}
+			// Recent prices from batch
+			l.RecentPrices = priceMap[itemID]
 			if l.RecentPrices == nil {
 				l.RecentPrices = []int{}
 			}
@@ -646,23 +607,17 @@ func handleMarketSnapshot(c echo.Context) error {
 			if len(l.RecentPrices) >= 2 {
 				prev := l.RecentPrices[1]
 				if prev > 0 {
-					l.ChangePct = float64(l.Price-prev) / float64(prev)
+					l.ChangePct = math.Round(float64(l.Price-prev)/float64(prev)*10000) / 10000
 				}
 			}
 
-			// Volume
-			pool.QueryRow(ctx,
-				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '1 hour'`,
-				itemID).Scan(&l.Buy1h)
-			pool.QueryRow(ctx,
-				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '1 hour'`,
-				itemID).Scan(&l.Sell1h)
-			pool.QueryRow(ctx,
-				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '24 hours'`,
-				itemID).Scan(&l.Buy24h)
-			pool.QueryRow(ctx,
-				`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '24 hours'`,
-				itemID).Scan(&l.Sell24h)
+			// Volume from batch
+			if v, ok := volMap[itemID]; ok {
+				l.Buy1h = v.Buy1h
+				l.Sell1h = v.Sell1h
+				l.Buy24h = v.Buy24h
+				l.Sell24h = v.Sell24h
+			}
 
 			listings = append(listings, l)
 		}

@@ -211,31 +211,41 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 		`SELECT description FROM market_events ORDER BY created_at DESC LIMIT 1`,
 	).Scan(&latestEvent)
 
-	// Build volume data for each item (past 1 hour)
+	// Build volume data for each item (batch, 1 query)
+	buyMap := map[string]int{}
+	sellMap := map[string]int{}
+	volRows, _ := pool.Query(ctx, `
+		SELECT item_id,
+			COUNT(*) FILTER (WHERE acquired_at >= now() - interval '1 hour') AS buy_1h,
+			COUNT(*) FILTER (WHERE sold_at >= now() - interval '1 hour') AS sell_1h
+		FROM inventories
+		WHERE acquired_at >= now() - interval '1 hour' OR sold_at >= now() - interval '1 hour'
+		GROUP BY item_id
+	`)
+	if volRows != nil {
+		for volRows.Next() {
+			var id string
+			var b, s int
+			volRows.Scan(&id, &b, &s)
+			buyMap[id] = b
+			sellMap[id] = s
+		}
+		volRows.Close()
+	}
+
 	var volItems []volumeItem
 	for _, item := range allItems {
-		var buyCount, sellCount int
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND acquired_at >= now() - interval '1 hour'`,
-			item.ID,
-		).Scan(&buyCount)
-		pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inventories WHERE item_id = $1 AND sold_at >= now() - interval '1 hour'`,
-			item.ID,
-		).Scan(&sellCount)
-
 		cur := currentPrices[item.ID]
 		if cur == 0 {
 			cur = item.AnchorPrice
 		}
-
 		volItems = append(volItems, volumeItem{
 			ID:           item.ID,
 			Name:         item.Name,
 			AnchorPrice:  item.AnchorPrice,
 			CurrentPrice: cur,
-			BuyCount:     buyCount,
-			SellCount:    sellCount,
+			BuyCount:     buyMap[item.ID],
+			SellCount:    sellMap[item.ID],
 		})
 	}
 
@@ -376,11 +386,11 @@ func pickRandomItems[T any](items []T, n int) []T {
 // ── AI Pricing (daily) ───────────────────────────────────────────────────────
 
 type aiItem struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	AnchorPrice int    `json:"anchor_price"`
-	History     []int  `json:"recent_prices"`
-	RecentBuys  int    `json:"recent_buys"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	AvgPrice7d int    `json:"avg_price_7d"`
+	History    []int  `json:"recent_prices"`
+	RecentBuys int    `json:"recent_buys"`
 }
 
 func getAIConfig(ctx context.Context) (baseURL, model, apiKey string) {
@@ -464,9 +474,19 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 	var itemList []aiItem
 	for _, item := range items {
 		info := aiItem{
-			Name:        item.Name,
-			Type:        item.ItemType,
-			AnchorPrice: item.AnchorPrice,
+			Name: item.Name,
+			Type: item.ItemType,
+		}
+		// 7-day average price (what AI sees instead of anchor)
+		var avg7d float64
+		pool.QueryRow(ctx,
+			`SELECT COALESCE(AVG(price), 0) FROM market_price_history WHERE item_id = $1 AND refreshed_at >= now() - interval '7 days'`,
+			item.ID,
+		).Scan(&avg7d)
+		if avg7d > 0 {
+			info.AvgPrice7d = int(math.Round(avg7d))
+		} else {
+			info.AvgPrice7d = item.AnchorPrice // fallback for new items with no history
 		}
 		phRows, _ := pool.Query(ctx,
 			`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 10`,
@@ -513,7 +533,7 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 	itemsJSON, _ := json.Marshal(itemList)
 	prompt := fmt.Sprintf(`你是一個糖果市場的分析師，負責管理一個有趣的糖果股市世界。請根據市場情況決定本次刷新的事件與物品漲跌幅。
 
-物品清單（含參考錨點價、近期成交價、近 3 天購買次數）：
+物品清單（含 7 天均價、近期成交價、近 3 天購買次數）：
 %s
 
 近期事件歷史（最新在前）：
@@ -524,7 +544,7 @@ func generateAIPricing(ctx context.Context, items []dbItem) (map[string]float64,
 {"event": "事件描述（一句話，有故事感）", "effects": {"物品名稱": 漲跌幅數值}}
 
 定價規則：
-1. 漲跌幅數值是相對「目前錨點價」的比例，例如 0.2 = 漲 20%%，-0.3 = 跌 30%%
+1. 漲跌幅數值是相對「7 天均價」的比例，例如 0.2 = 漲 20%%，-0.3 = 跌 30%%
 2. 每件物品都必須有 effect 值
 3. 大部分時候（70%%）：物品在 ±10%% 內微幅波動，市場平穩
 4. 偶爾（25%%）：受事件影響，個別物品 ±15~30%% 中幅波動

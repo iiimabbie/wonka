@@ -137,12 +137,10 @@ func main() {
 	e.GET("/v1/market", handleMarket)
 	e.POST("/v1/market/buy", handleMarketBuy, agentAuthMiddleware)
 	e.POST("/v1/market/sell", handleMarketSell, agentAuthMiddleware)
-	e.GET("/v1/market/items", handleMarketItems)
 	e.GET("/v1/market/prices", handlePriceHistory)
 	e.GET("/v1/market/events", handleMarketEvents)
 	e.POST("/v1/market/refresh", handleMarketRefresh)
 	e.POST("/v1/market/hourly-refresh", handleHourlyRefresh)
-	e.GET("/v1/market/volume", handleMarketVolume)
 	e.GET("/v1/market/snapshot", handleMarketSnapshot, agentAuthMiddleware)
 
 	// ── Inventory (agent-key) ────────────────────────────────────────────────
