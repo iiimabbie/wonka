@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"log"
 	"net/http"
 	"os"
@@ -68,7 +69,8 @@ func adminKeyMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		if adminKey == "" {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "WONKA_ADMIN_KEY not configured"})
 		}
-		if c.Request().Header.Get("X-Admin-Key") != adminKey {
+		provided := c.Request().Header.Get("X-Admin-Key")
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(adminKey)) != 1 {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "forbidden"})
 		}
 		return next(c)
@@ -127,14 +129,23 @@ func main() {
 		AllowHeaders: []string{"*"},
 	}))
 
+	// Global rate limit (20 req/s per IP)
+	e.Use(middleware.RateLimiter(middleware.NewRateLimiterMemoryStoreWithConfig(
+		middleware.RateLimiterMemoryStoreConfig{Rate: 20, Burst: 40, ExpiresIn: 3 * time.Minute},
+	)))
+
 	// Health
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	// ── Auth (public) ────────────────────────────────────────────────────────
-	e.POST("/v1/auth/register", handleRegister)
-	e.POST("/v1/auth/login", handleLogin)
+	// ── Auth (public, stricter rate limit) ───────────────────────────────────
+	authLimiter := middleware.RateLimiter(middleware.NewRateLimiterMemoryStoreWithConfig(
+		middleware.RateLimiterMemoryStoreConfig{Rate: 5, Burst: 10, ExpiresIn: 3 * time.Minute},
+	))
+	e.POST("/v1/auth/register", handleRegister, authLimiter)
+	e.POST("/v1/auth/login", handleLogin, authLimiter)
+	e.POST("/v1/auth/refresh", handleRefreshToken, authLimiter)
 
 	// ── Candy (agent-key auth) ───────────────────────────────────────────────
 	candy := e.Group("/v1/candies", agentAuthMiddleware)
@@ -200,7 +211,15 @@ func main() {
 				log.Printf("🚨 Daily scheduler panicked: %v", r)
 			}
 		}()
-		loc, _ := time.LoadLocation("Asia/Taipei")
+		loc, err := time.LoadLocation("Asia/Taipei")
+		if err != nil {
+			if err != nil {
+				log.Printf("⚠️ Failed to load Asia/Taipei timezone: %v. Using UTC.", err)
+				loc = time.UTC
+			}
+			log.Printf("🚨 Failed to load Asia/Taipei timezone: %v — daily scheduler disabled", err)
+			return
+		}
 		for {
 			now := time.Now().In(loc)
 			next8 := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, loc)
@@ -230,11 +249,19 @@ func main() {
 	// Hourly price refresh scheduler (volume-driven, no new event)
 	go func() {
 		defer func() {
+			if err != nil {
+				log.Printf("⚠️ Failed to load Asia/Taipei: %v. Falling back to UTC.", err)
+				loc = time.UTC
+			}
 			if r := recover(); r != nil {
 				log.Printf("🚨 Hourly scheduler panicked: %v", r)
 			}
 		}()
-		loc, _ := time.LoadLocation("Asia/Taipei")
+		loc, err := time.LoadLocation("Asia/Taipei")
+		if err != nil {
+			log.Printf("🚨 Failed to load Asia/Taipei timezone: %v — hourly scheduler disabled", err)
+			return
+		}
 		for {
 			now := time.Now().In(loc)
 			// Skip if we're within 5 min of a daily refresh (08:00 or 20:00)

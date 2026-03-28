@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -103,4 +104,12 @@ func resolveUserFromDB(ctx context.Context, pool *pgxpool.Pool, token, secret st
 		return nil, fmt.Errorf("user not found")
 	}
 	return &user, nil
+}
+
+// agentLockID generates a deterministic int64 lock ID from an agent UUID string,
+// used with pg_advisory_xact_lock to serialize per-agent balance mutations.
+func agentLockID(agentID string) int64 {
+	h := fnv.New64a()
+	h.Write([]byte(agentID))
+	return int64(h.Sum64())
 }
