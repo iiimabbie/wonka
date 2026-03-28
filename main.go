@@ -97,21 +97,24 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Ensure settings row exists
-	_, err = pool.Exec(context.Background(),
-	// Seed default settings (only if table is empty)
+	// Ensure settings row exists (only if table is empty)
 	var count int
-	pool.QueryRow(ctx, "SELECT COUNT(*) FROM settings").Scan(&count)
+	err = pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM settings").Scan(&count)
+	if err != nil {
+		log.Printf("Warning: failed to count settings: %v", err)
+	}
+
 	if count == 0 {
-		pool.Exec(ctx,
+		log.Println("🌱 Seeding initial settings from environment variables...")
+		_, err = pool.Exec(context.Background(),
 			`INSERT INTO settings (ai_base_url, ai_model, ai_api_key) VALUES ($1, $2, $3)`,
 			os.Getenv("WONKA_AI_BASE_URL"),
 			os.Getenv("WONKA_AI_MODEL"),
 			os.Getenv("WONKA_AI_API_KEY"),
 		)
-	}
-	if err != nil {
-		log.Printf("Warning: failed to ensure settings row: %v", err)
+		if err != nil {
+			log.Printf("Warning: failed to seed initial settings: %v", err)
+		}
 	}
 
 	e := echo.New()
