@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +14,7 @@ import (
 // ── Auth Handlers ────────────────────────────────────────────────────────────
 
 func handleRegister(c echo.Context) error {
+	ctx := c.Request().Context()
 	type req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -31,7 +31,7 @@ func handleRegister(c echo.Context) error {
 	}
 
 	var userID string
-	err = pool.QueryRow(context.Background(),
+	err = pool.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, '') RETURNING id`,
 		r.Email, hash, r.Name,
 	).Scan(&userID)
@@ -43,6 +43,7 @@ func handleRegister(c echo.Context) error {
 }
 
 func handleLogin(c echo.Context) error {
+	ctx := c.Request().Context()
 	type req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -55,7 +56,7 @@ func handleLogin(c echo.Context) error {
 	jwtSecret := os.Getenv("JWT_SECRET")
 
 	var userID, hash, role string
-	err := pool.QueryRow(context.Background(),
+	err := pool.QueryRow(ctx,
 		`SELECT id, password_hash, role FROM users WHERE email = $1`,
 		r.Email,
 	).Scan(&userID, &hash, &role)
@@ -70,7 +71,7 @@ func handleLogin(c echo.Context) error {
 
 	// Fetch user name for UI
 	var name string
-	pool.QueryRow(context.Background(), `SELECT name FROM users WHERE id = $1`, userID).Scan(&name)
+	pool.QueryRow(ctx, `SELECT name FROM users WHERE id = $1`, userID).Scan(&name)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"token": token,
@@ -86,10 +87,11 @@ func handleLogin(c echo.Context) error {
 // ── Candy Handlers ───────────────────────────────────────────────────────────
 
 func handleGetBalance(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	var balance int
 	var lastMod *time.Time
-	err := pool.QueryRow(context.Background(),
+	err := pool.QueryRow(ctx,
 		`SELECT balance, last_mod FROM agent_balances WHERE id = $1`,
 		agent.ID,
 	).Scan(&balance, &lastMod)
@@ -108,6 +110,7 @@ func handleGetBalance(c echo.Context) error {
 }
 
 func handleAdjustCandies(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	type req struct {
 		Delta          int    `json:"delta"`
@@ -119,7 +122,7 @@ func handleAdjustCandies(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	_, err := pool.Exec(context.Background(),
+	_, err := pool.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (agent_id, idempotency_key) DO NOTHING`,
 		agent.ID, r.Delta, r.Reason, r.IdempotencyKey,
@@ -132,6 +135,7 @@ func handleAdjustCandies(c echo.Context) error {
 }
 
 func handleGetHistory(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	type entry struct {
 		ID             string    `json:"id"`
@@ -141,7 +145,7 @@ func handleGetHistory(c echo.Context) error {
 		IdempotencyKey string    `json:"idempotency_key"`
 		CreatedAt      time.Time `json:"created_at"`
 	}
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(ctx,
 		`SELECT id, delta, reason, idempotency_key, created_at
 		 FROM candy_ledger WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 50`,
 		agent.ID,
@@ -165,7 +169,8 @@ func handleGetHistory(c echo.Context) error {
 }
 
 func handleGetLeaderboard(c echo.Context) error {
-	rows, err := pool.Query(context.Background(), `
+	ctx := c.Request().Context()
+	rows, err := pool.Query(ctx, `
 		SELECT
 			ab.name,
 			ab.balance,
@@ -214,13 +219,14 @@ func handleGetLeaderboard(c echo.Context) error {
 }
 
 func handleGetSummary(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	now := time.Now()
 	weekStart := now.AddDate(0, 0, -int(now.Weekday()))
 	weekStart = time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, weekStart.Location())
 
 	var earned, spent int
-	pool.QueryRow(context.Background(),
+	pool.QueryRow(ctx,
 		`SELECT
 			COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0),
 			COALESCE(ABS(SUM(CASE WHEN delta < 0 THEN delta ELSE 0 END)), 0)
@@ -229,7 +235,7 @@ func handleGetSummary(c echo.Context) error {
 	).Scan(&earned, &spent)
 
 	var balance int
-	pool.QueryRow(context.Background(),
+	pool.QueryRow(ctx,
 		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
 	).Scan(&balance)
 
@@ -245,6 +251,7 @@ func handleGetSummary(c echo.Context) error {
 // ── Transfer Handlers ────────────────────────────────────────────────────────
 
 func handleTransfer(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	type req struct {
 		To             string `json:"to"`
@@ -259,7 +266,7 @@ func handleTransfer(c echo.Context) error {
 
 	// Resolve destination agent
 	var toID string
-	err := pool.QueryRow(context.Background(),
+	err := pool.QueryRow(ctx,
 		`SELECT id FROM agents WHERE name = $1 AND enabled = true`, r.To,
 	).Scan(&toID)
 	if err != nil {
@@ -272,7 +279,7 @@ func handleTransfer(c echo.Context) error {
 
 	// Check balance
 	var balance int
-	pool.QueryRow(context.Background(),
+	pool.QueryRow(ctx,
 		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
 	).Scan(&balance)
 	if balance < r.Amount {
@@ -280,14 +287,14 @@ func handleTransfer(c echo.Context) error {
 	}
 
 	// Transaction: insert transfer + two ledger entries
-	tx, err := pool.Begin(context.Background())
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
 
 	var transferID string
-	err = tx.QueryRow(context.Background(),
+	err = tx.QueryRow(ctx,
 		`INSERT INTO transfers (from_agent, to_agent, amount, reason, idempotency_key)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		agent.ID, toID, r.Amount, r.Reason, r.IdempotencyKey,
@@ -297,7 +304,7 @@ func handleTransfer(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
 	}
 
-	_, err = tx.Exec(context.Background(),
+	_, err = tx.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key, transfer_id)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		agent.ID, -r.Amount, "transfer out: "+r.Reason, "out:"+transferID, transferID,
@@ -306,7 +313,7 @@ func handleTransfer(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
-	_, err = tx.Exec(context.Background(),
+	_, err = tx.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key, transfer_id)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		toID, r.Amount, "transfer in: "+r.Reason, "in:"+transferID, transferID,
@@ -315,7 +322,7 @@ func handleTransfer(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
 
@@ -326,6 +333,7 @@ func handleTransfer(c echo.Context) error {
 }
 
 func handleTransferHistory(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	type entry struct {
 		ID        string    `json:"id"`
@@ -335,7 +343,7 @@ func handleTransferHistory(c echo.Context) error {
 		Reason    string    `json:"reason"`
 		CreatedAt time.Time `json:"created_at"`
 	}
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(ctx,
 		`SELECT t.id, fa.name, ta.name, t.amount, t.reason, t.created_at
 		 FROM transfers t
 		 JOIN agents fa ON fa.id = t.from_agent
@@ -361,6 +369,7 @@ func handleTransferHistory(c echo.Context) error {
 // ── Agent Handlers (user-auth) ───────────────────────────────────────────────
 
 func handleCreateAgent(c echo.Context) error {
+	ctx := c.Request().Context()
 	user := c.Get("user").(*User)
 	type req struct {
 		Name string `json:"name"`
@@ -380,7 +389,7 @@ func handleCreateAgent(c echo.Context) error {
 	keyHash := hex.EncodeToString(h[:])
 
 	var agentID string
-	err := pool.QueryRow(context.Background(),
+	err := pool.QueryRow(ctx,
 		`INSERT INTO agents (name, key_hash, enabled, owner) VALUES ($1, $2, true, $3) RETURNING id`,
 		r.Name, keyHash, user.ID,
 	).Scan(&agentID)
@@ -396,6 +405,7 @@ func handleCreateAgent(c echo.Context) error {
 }
 
 func handleListAgents(c echo.Context) error {
+	ctx := c.Request().Context()
 	user := c.Get("user").(*User)
 	type agentItem struct {
 		ID      string `json:"id"`
@@ -403,7 +413,7 @@ func handleListAgents(c echo.Context) error {
 		Enabled bool   `json:"enabled"`
 		Balance int    `json:"balance"`
 	}
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(ctx,
 		`SELECT a.id, a.name, a.enabled, COALESCE(ab.balance, 0)
 		 FROM agents a
 		 LEFT JOIN agent_balances ab ON ab.id = a.id
@@ -435,13 +445,14 @@ func handleUserProfile(c echo.Context) error {
 }
 
 func handleGetAgentBalance(c echo.Context) error {
+	ctx := c.Request().Context()
 	user := c.Get("user").(*User)
 	agentID := c.Param("agentId")
 
 	// Verify ownership (admin bypass)
 	if user.Role != "admin" {
 		var ownerID string
-		err := pool.QueryRow(context.Background(),
+		err := pool.QueryRow(ctx,
 			`SELECT owner FROM agents WHERE id = $1`, agentID,
 		).Scan(&ownerID)
 		if err != nil || ownerID != user.ID {
@@ -452,7 +463,7 @@ func handleGetAgentBalance(c echo.Context) error {
 	var name string
 	var balance int
 	var lastMod *time.Time
-	err := pool.QueryRow(context.Background(),
+	err := pool.QueryRow(ctx,
 		`SELECT a.name, COALESCE(ab.balance, 0), ab.last_mod
 		 FROM agents a LEFT JOIN agent_balances ab ON ab.id = a.id
 		 WHERE a.id = $1`, agentID,
@@ -469,12 +480,13 @@ func handleGetAgentBalance(c echo.Context) error {
 }
 
 func handleGetAgentInventory(c echo.Context) error {
+	ctx := c.Request().Context()
 	user := c.Get("user").(*User)
 	agentID := c.Param("agentId")
 
 	if user.Role != "admin" {
 		var ownerID string
-		err := pool.QueryRow(context.Background(),
+		err := pool.QueryRow(ctx,
 			`SELECT owner FROM agents WHERE id = $1`, agentID,
 		).Scan(&ownerID)
 		if err != nil || ownerID != user.ID {
@@ -491,7 +503,7 @@ func handleGetAgentInventory(c echo.Context) error {
 		SoldAt        *time.Time `json:"sold_at,omitempty"`
 		SoldPrice     *int       `json:"sold_price,omitempty"`
 	}
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(ctx,
 		`SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price, inv.sold_at, inv.sold_price
 		 FROM inventories inv JOIN market_items mi ON mi.id = inv.item_id
 		 WHERE inv.agent_id = $1 AND inv.sold_at IS NULL ORDER BY inv.acquired_at DESC`,
@@ -512,12 +524,13 @@ func handleGetAgentInventory(c echo.Context) error {
 }
 
 func handleGetAgentHistory(c echo.Context) error {
+	ctx := c.Request().Context()
 	user := c.Get("user").(*User)
 	agentID := c.Param("agentId")
 
 	if user.Role != "admin" {
 		var ownerID string
-		err := pool.QueryRow(context.Background(),
+		err := pool.QueryRow(ctx,
 			`SELECT owner FROM agents WHERE id = $1`, agentID,
 		).Scan(&ownerID)
 		if err != nil || ownerID != user.ID {
@@ -526,7 +539,7 @@ func handleGetAgentHistory(c echo.Context) error {
 	}
 
 	var agentName string
-	pool.QueryRow(context.Background(), `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&agentName)
+	pool.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&agentName)
 
 	type entry struct {
 		ID             string    `json:"id"`
@@ -536,7 +549,7 @@ func handleGetAgentHistory(c echo.Context) error {
 		IdempotencyKey string    `json:"idempotency_key"`
 		CreatedAt      time.Time `json:"created_at"`
 	}
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(ctx,
 		`SELECT id, delta, reason, idempotency_key, created_at
 		 FROM candy_ledger WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 50`,
 		agentID,
@@ -560,13 +573,14 @@ func handleGetAgentHistory(c echo.Context) error {
 }
 
 func handleRegenerateKey(c echo.Context) error {
+	ctx := c.Request().Context()
 	user := c.Get("user").(*User)
 	agentID := c.Param("agentId")
 
 	// Owner or admin
 	if user.Role != "admin" {
 		var ownerID string
-		err := pool.QueryRow(context.Background(),
+		err := pool.QueryRow(ctx,
 			`SELECT owner FROM agents WHERE id = $1`, agentID,
 		).Scan(&ownerID)
 		if err != nil || ownerID != user.ID {
@@ -582,7 +596,7 @@ func handleRegenerateKey(c echo.Context) error {
 	h := sha256.Sum256([]byte(apiKey))
 	keyHash := hex.EncodeToString(h[:])
 
-	_, err := pool.Exec(context.Background(),
+	_, err := pool.Exec(ctx,
 		`UPDATE agents SET key_hash = $1, updated_at = now() WHERE id = $2`,
 		keyHash, agentID,
 	)

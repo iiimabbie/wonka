@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"math"
 	"net/http"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 // ── GET /v1/market ───────────────────────────────────────────────────────────
 
 func handleMarket(c echo.Context) error {
+	ctx := c.Request().Context()
 	type Listing struct {
 		ID          string    `json:"id"`
 		ItemName    string    `json:"item_name"`
@@ -24,7 +24,7 @@ func handleMarket(c echo.Context) error {
 		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 
-	rows, err := pool.Query(context.Background(), `
+	rows, err := pool.Query(ctx, `
 		SELECT ml.id, mi.name, mi.description, mi.type, ml.price,
 		       mi.image_url, ml.refreshed_at, ml.expires_at
 		FROM market_listings ml
@@ -52,7 +52,7 @@ func handleMarket(c echo.Context) error {
 	}
 	var event *Event
 	var e Event
-	err = pool.QueryRow(context.Background(),
+	err = pool.QueryRow(ctx,
 		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT 1`,
 	).Scan(&e.Description, &e.CreatedAt)
 	if err == nil {
@@ -68,6 +68,7 @@ func handleMarket(c echo.Context) error {
 // ── POST /v1/market/buy ──────────────────────────────────────────────────────
 
 func handleMarketBuy(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	type req struct {
 		ListingID      string `json:"listing_id"`
@@ -80,10 +81,12 @@ func handleMarketBuy(c echo.Context) error {
 
 	// Idempotency check
 	var exists bool
-	pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2)`,
 		agent.ID, r.IdempotencyKey,
-	).Scan(&exists)
+	).Scan(&exists); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
 	if exists {
 		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
 	}
@@ -92,7 +95,7 @@ func handleMarketBuy(c echo.Context) error {
 	var itemID string
 	var itemName string
 	var price int
-	err := pool.QueryRow(context.Background(), `
+	err := pool.QueryRow(ctx, `
 		SELECT ml.item_id, mi.name, ml.price
 		FROM market_listings ml
 		JOIN market_items mi ON mi.id = ml.item_id
@@ -104,9 +107,11 @@ func handleMarketBuy(c echo.Context) error {
 
 	// Check balance
 	var balance int
-	pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(ctx,
 		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
-	).Scan(&balance)
+	).Scan(&balance); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
 	if balance < price {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error":   "insufficient balance",
@@ -116,13 +121,13 @@ func handleMarketBuy(c echo.Context) error {
 	}
 
 	// Transaction: debit + inventory + price history
-	tx, err := pool.Begin(context.Background())
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(context.Background(),
+	_, err = tx.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
 		agent.ID, -price, "market buy: "+itemName, r.IdempotencyKey,
 	)
@@ -130,7 +135,7 @@ func handleMarketBuy(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
-	_, err = tx.Exec(context.Background(),
+	_, err = tx.Exec(ctx,
 		`INSERT INTO inventories (agent_id, item_id, acquired_price) VALUES ($1, $2, $3)`,
 		agent.ID, itemID, price,
 	)
@@ -138,13 +143,13 @@ func handleMarketBuy(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory error"})
 	}
 
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
 
 	// New balance
 	var newBalance int
-	pool.QueryRow(context.Background(),
+	pool.QueryRow(ctx,
 		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
 	).Scan(&newBalance)
 
@@ -159,6 +164,7 @@ func handleMarketBuy(c echo.Context) error {
 // ── POST /v1/market/sell ─────────────────────────────────────────────────────
 
 func handleMarketSell(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 	type req struct {
 		InventoryID    string `json:"inventory_id"`
@@ -171,10 +177,12 @@ func handleMarketSell(c echo.Context) error {
 
 	// Idempotency
 	var exists bool
-	pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2)`,
 		agent.ID, r.IdempotencyKey,
-	).Scan(&exists)
+	).Scan(&exists); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
+	}
 	if exists {
 		return c.JSON(http.StatusOK, map[string]string{"status": "duplicate"})
 	}
@@ -183,7 +191,7 @@ func handleMarketSell(c echo.Context) error {
 	var itemID, itemName string
 	var acquiredPrice int
 	var soldAt *time.Time
-	err := pool.QueryRow(context.Background(), `
+	err := pool.QueryRow(ctx, `
 		SELECT inv.item_id, mi.name, inv.acquired_price, inv.sold_at
 		FROM inventories inv
 		JOIN market_items mi ON mi.id = inv.item_id
@@ -198,14 +206,14 @@ func handleMarketSell(c echo.Context) error {
 
 	// Sell price: current listing → last price history → 1 (absolute fallback)
 	var sellPrice int
-	err = pool.QueryRow(context.Background(), `
+	err = pool.QueryRow(ctx, `
 		SELECT ml.price FROM market_listings ml
 		WHERE ml.item_id = $1 AND ml.expired = false
 		ORDER BY ml.refreshed_at DESC LIMIT 1
 	`, itemID).Scan(&sellPrice)
 	if err != nil {
 		// fallback to most recent price history
-		err2 := pool.QueryRow(context.Background(),
+		err2 := pool.QueryRow(ctx,
 			`SELECT price FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT 1`, itemID,
 		).Scan(&sellPrice)
 		if err2 != nil {
@@ -214,13 +222,13 @@ func handleMarketSell(c echo.Context) error {
 	}
 
 	// Transaction: credit + mark sold
-	tx, err := pool.Begin(context.Background())
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(context.Background(),
+	_, err = tx.Exec(ctx,
 		`INSERT INTO candy_ledger (agent_id, delta, reason, idempotency_key) VALUES ($1, $2, $3, $4)`,
 		agent.ID, sellPrice, "market sell: "+itemName, r.IdempotencyKey,
 	)
@@ -228,7 +236,7 @@ func handleMarketSell(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
-	_, err = tx.Exec(context.Background(),
+	_, err = tx.Exec(ctx,
 		`UPDATE inventories SET sold_at = now(), sold_price = $1 WHERE id = $2`,
 		sellPrice, r.InventoryID,
 	)
@@ -236,12 +244,12 @@ func handleMarketSell(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory update error"})
 	}
 
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
 
 	var newBalance int
-	pool.QueryRow(context.Background(),
+	pool.QueryRow(ctx,
 		`SELECT COALESCE(balance, 0) FROM agent_balances WHERE id = $1`, agent.ID,
 	).Scan(&newBalance)
 
@@ -257,8 +265,9 @@ func handleMarketSell(c echo.Context) error {
 // ── GET /v1/inventory ────────────────────────────────────────────────────────
 
 func handleInventory(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
-	rows, err := pool.Query(context.Background(), `
+	rows, err := pool.Query(ctx, `
 		SELECT inv.id, mi.name, mi.type, inv.acquired_price
 		FROM inventories inv
 		JOIN market_items mi ON mi.id = inv.item_id
@@ -349,6 +358,7 @@ func groupInventory(rawItems []rawInventoryItem) []groupedInventoryItem {
 // ── GET /v1/inventory/history ────────────────────────────────────────────────
 
 func handleInventoryHistory(c echo.Context) error {
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
@@ -369,7 +379,7 @@ func handleInventoryHistory(c echo.Context) error {
 		SoldAt        *time.Time `json:"sold_at"`
 		SoldPrice     *int       `json:"sold_price"`
 	}
-	rows, err := pool.Query(context.Background(), `
+	rows, err := pool.Query(ctx, `
 		SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price, inv.sold_at, inv.sold_price
 		FROM inventories inv
 		JOIN market_items mi ON mi.id = inv.item_id
@@ -399,6 +409,7 @@ func handleInventoryHistory(c echo.Context) error {
 // ── GET /v1/market/prices ────────────────────────────────────────────────────
 
 func handlePriceHistory(c echo.Context) error {
+	ctx := c.Request().Context()
 	itemID := c.QueryParam("item_id")
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
 	if limit <= 0 || limit > 200 {
@@ -415,7 +426,7 @@ func handlePriceHistory(c echo.Context) error {
 	var pts []point
 
 	if itemID != "" {
-		r, e := pool.Query(context.Background(),
+		r, e := pool.Query(ctx,
 			`SELECT price, refreshed_at FROM market_price_history WHERE item_id = $1 ORDER BY refreshed_at DESC LIMIT $2`,
 			itemID, limit,
 		)
@@ -430,7 +441,7 @@ func handlePriceHistory(c echo.Context) error {
 			}
 		}
 	} else {
-		r, e := pool.Query(context.Background(),
+		r, e := pool.Query(ctx,
 			`SELECT price, refreshed_at FROM market_price_history ORDER BY refreshed_at DESC LIMIT $1`,
 			limit,
 		)
@@ -459,6 +470,7 @@ func handlePriceHistory(c echo.Context) error {
 // ── GET /v1/market/events ────────────────────────────────────────────────────
 
 func handleMarketEvents(c echo.Context) error {
+	ctx := c.Request().Context()
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
 	if limit <= 0 || limit > 50 {
 		limit = 14
@@ -468,7 +480,7 @@ func handleMarketEvents(c echo.Context) error {
 		Description string    `json:"description"`
 		CreatedAt   time.Time `json:"created_at"`
 	}
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(ctx,
 		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT $1`, limit,
 	)
 	if err != nil {
@@ -488,7 +500,7 @@ func handleMarketEvents(c echo.Context) error {
 // ── GET /v1/market/snapshot (agent-key auth) ─────────────────────────────────
 
 func handleMarketSnapshot(c echo.Context) error {
-	ctx := context.Background()
+	ctx := c.Request().Context()
 	agent := c.Get("agent").(*Agent)
 
 	// 1. Balance

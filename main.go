@@ -61,6 +61,20 @@ func adminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+// adminKeyMiddleware checks X-Admin-Key header (for internal/cron calls)
+func adminKeyMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		adminKey := os.Getenv("WONKA_ADMIN_KEY")
+		if adminKey == "" {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "WONKA_ADMIN_KEY not configured"})
+		}
+		if c.Request().Header.Get("X-Admin-Key") != adminKey {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "forbidden"})
+		}
+		return next(c)
+	}
+}
+
 func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -139,8 +153,8 @@ func main() {
 	e.POST("/v1/market/sell", handleMarketSell, agentAuthMiddleware)
 	e.GET("/v1/market/prices", handlePriceHistory)
 	e.GET("/v1/market/events", handleMarketEvents)
-	e.POST("/v1/market/refresh", handleMarketRefresh)
-	e.POST("/v1/market/hourly-refresh", handleHourlyRefresh)
+	e.POST("/v1/market/refresh", handleMarketRefresh, adminKeyMiddleware)
+	e.POST("/v1/market/hourly-refresh", handleHourlyRefresh, adminKeyMiddleware)
 	e.GET("/v1/market/snapshot", handleMarketSnapshot, agentAuthMiddleware)
 
 	// Deprecated routes → explicit 404
@@ -168,6 +182,11 @@ func main() {
 
 	// Internal market refresh scheduler: 08:00 and 20:00 Asia/Taipei (event + price)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🚨 Daily scheduler panicked: %v", r)
+			}
+		}()
 		loc, _ := time.LoadLocation("Asia/Taipei")
 		for {
 			now := time.Now().In(loc)
@@ -197,6 +216,11 @@ func main() {
 
 	// Hourly price refresh scheduler (volume-driven, no new event)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🚨 Hourly scheduler panicked: %v", r)
+			}
+		}()
 		loc, _ := time.LoadLocation("Asia/Taipei")
 		for {
 			now := time.Now().In(loc)

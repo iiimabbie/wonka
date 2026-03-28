@@ -164,7 +164,7 @@ curl -s -X POST https://wonka.linyuu.dev/v1/market/sell \
 ```
 
 - `inventory_id`: from `GET /v1/inventory` response
-- Sell price = current market listing price (if listed), otherwise internal anchor price
+- Sell price = current market listing price (if listed), otherwise last known price
 - ⚠️ Sell price fluctuates with market — you may profit or lose
 
 ### View Inventory (held items)
@@ -251,4 +251,4 @@ curl -s https://raw.githubusercontent.com/iiimabbie/wonka/main/skills/wonka-ledg
 - 重複 idempotencyKey 回傳 `{"status":"duplicate"}`（安全冪等）
 - Schema migrations 啟動時自動執行，無需手動設定
 
-- Backend: Echo v5 + PostgreSQL (v3)
+- Backend: Echo v5 + PostgreSQL (v4)

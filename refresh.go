@@ -26,26 +26,12 @@ type dbItem struct {
 // ── POST /v1/market/refresh (X-Admin-Key) ────────────────────────────────────
 
 func handleMarketRefresh(c echo.Context) error {
-	adminKey := os.Getenv("WONKA_ADMIN_KEY")
-	if adminKey == "" {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "WONKA_ADMIN_KEY not configured"})
-	}
-	if c.Request().Header.Get("X-Admin-Key") != adminKey {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid admin key"})
-	}
 	return doMarketRefresh(c)
 }
 
-// ── POST /v1/market/hourly-refresh (X-Admin-Key) ─────────────────────────────
+// ── POST /v1/market/hourly-refresh (admin-key middleware) ─────────────────────
 
 func handleHourlyRefresh(c echo.Context) error {
-	adminKey := os.Getenv("WONKA_ADMIN_KEY")
-	if adminKey == "" {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "WONKA_ADMIN_KEY not configured"})
-	}
-	if c.Request().Header.Get("X-Admin-Key") != adminKey {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid admin key"})
-	}
 	res, err := runHourlyPriceRefresh()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -144,6 +130,11 @@ func runMarketRefresh() (*refreshResult, error) {
 
 	// After daily refresh: update anchor_price toward 7-day avg
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🚨 updateAnchorPrices panicked: %v", r)
+			}
+		}()
 		if err := updateAnchorPrices(ctx); err != nil {
 			log.Printf("⚠️ Failed to update anchor prices: %v", err)
 		}
