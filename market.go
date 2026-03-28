@@ -255,35 +255,92 @@ func handleMarketSell(c echo.Context) error {
 
 func handleInventory(c echo.Context) error {
 	agent := c.Get("agent").(*Agent)
-	type item struct {
-		ID            string    `json:"id"`
-		ItemName      string    `json:"item_name"`
-		ItemType      string    `json:"item_type"`
-		AcquiredAt    time.Time `json:"acquired_at"`
-		AcquiredPrice int       `json:"acquired_price"`
-	}
 	rows, err := pool.Query(context.Background(), `
-		SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price
+		SELECT inv.id, mi.name, mi.type, inv.acquired_price
 		FROM inventories inv
 		JOIN market_items mi ON mi.id = inv.item_id
 		WHERE inv.agent_id = $1 AND inv.sold_at IS NULL
-		ORDER BY inv.acquired_at DESC
+		ORDER BY mi.name, inv.acquired_price
 	`, agent.ID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
 
-	items := []item{}
+	var rawItems []rawInventoryItem
 	for rows.Next() {
-		var i item
-		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice)
-		items = append(items, i)
+		var i rawInventoryItem
+		rows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredPrice)
+		rawItems = append(rawItems, i)
 	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"agent": agent.Name,
-		"items": items,
+		"items": groupInventory(rawItems),
 	})
+}
+
+type inventoryHolding struct {
+	Price    int      `json:"price"`
+	Quantity int      `json:"quantity"`
+	IDs      []string `json:"ids"`
+}
+
+type groupedInventoryItem struct {
+	ItemName string             `json:"item_name"`
+	ItemType string             `json:"item_type"`
+	Total    int                `json:"total"`
+	Holdings []inventoryHolding `json:"holdings"`
+}
+
+type rawInventoryItem struct {
+	ID            string
+	ItemName      string
+	ItemType      string
+	AcquiredPrice int
+}
+
+func groupInventory(rawItems []rawInventoryItem) []groupedInventoryItem {
+	// Group by item_name, then by price
+	type key struct{ Name string }
+	orderMap := map[string]*groupedInventoryItem{}
+	var order []string
+
+	for _, r := range rawItems {
+		g, exists := orderMap[r.ItemName]
+		if !exists {
+			g = &groupedInventoryItem{ItemName: r.ItemName, ItemType: r.ItemType}
+			orderMap[r.ItemName] = g
+			order = append(order, r.ItemName)
+		}
+		// Find or create holding for this price
+		found := false
+		for i := range g.Holdings {
+			if g.Holdings[i].Price == r.AcquiredPrice {
+				g.Holdings[i].Quantity++
+				g.Holdings[i].IDs = append(g.Holdings[i].IDs, r.ID)
+				found = true
+				break
+			}
+		}
+		if !found {
+			g.Holdings = append(g.Holdings, inventoryHolding{
+				Price:    r.AcquiredPrice,
+				Quantity: 1,
+				IDs:      []string{r.ID},
+			})
+		}
+		g.Total++
+	}
+
+	var result []groupedInventoryItem
+	for _, name := range order {
+		result = append(result, *orderMap[name])
+	}
+	if result == nil {
+		result = []groupedInventoryItem{}
+	}
+	return result
 }
 
 // ── GET /v1/inventory/history ────────────────────────────────────────────────
@@ -516,33 +573,24 @@ func handleMarketSnapshot(c echo.Context) error {
 		`SELECT COALESCE(SUM(delta), 0) FROM candy_ledger WHERE agent_id = $1`, agent.ID,
 	).Scan(&balance)
 
-	// 2. Inventory
-	type invItem struct {
-		ID            string    `json:"id"`
-		ItemName      string    `json:"item_name"`
-		ItemType      string    `json:"item_type"`
-		AcquiredAt    time.Time `json:"acquired_at"`
-		AcquiredPrice int       `json:"acquired_price"`
-	}
+	// 2. Inventory (grouped by item + price)
 	invRows, err := pool.Query(ctx, `
-		SELECT inv.id, mi.name, mi.type, inv.acquired_at, inv.acquired_price
+		SELECT inv.id, mi.name, mi.type, inv.acquired_price
 		FROM inventories inv
 		JOIN market_items mi ON mi.id = inv.item_id
 		WHERE inv.agent_id = $1 AND inv.sold_at IS NULL
-		ORDER BY inv.acquired_at DESC
+		ORDER BY mi.name, inv.acquired_price
 	`, agent.ID)
-	var inventory []invItem
+	var rawInv []rawInventoryItem
 	if err == nil {
 		defer invRows.Close()
 		for invRows.Next() {
-			var i invItem
-			invRows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredAt, &i.AcquiredPrice)
-			inventory = append(inventory, i)
+			var i rawInventoryItem
+			invRows.Scan(&i.ID, &i.ItemName, &i.ItemType, &i.AcquiredPrice)
+			rawInv = append(rawInv, i)
 		}
 	}
-	if inventory == nil {
-		inventory = []invItem{}
-	}
+	inventory := groupInventory(rawInv)
 
 	// 3. Listings with change_pct, volume, recent_prices
 	type snapshotListing struct {
