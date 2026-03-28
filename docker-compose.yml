@@ -10,6 +10,6 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - JWT_SECRET=${JWT_SECRET:-changeme-please}
       - WONKA_ADMIN_KEY=${WONKA_ADMIN_KEY:-}
-      - WONKA_AI_BASE_URL=${WONKA_AI_BASE_URL:-}
-      - WONKA_AI_MODEL=${WONKA_AI_MODEL:-}
+      - WONKA_AI_BASE_URL=${WONKA_AI_BASE_URL:-https://proxy.linyuu.dev/v1}
+      - WONKA_AI_MODEL=${WONKA_AI_MODEL:-gemini-3-flash-preview}
       - WONKA_AI_API_KEY=${WONKA_AI_API_KEY:-}
