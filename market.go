@@ -15,6 +15,7 @@ func handleMarket(c echo.Context) error {
 	ctx := c.Request().Context()
 	type Listing struct {
 		ID          string    `json:"id"`
+		ItemID      string    `json:"item_id"`
 		ItemName    string    `json:"item_name"`
 		ItemDesc    string    `json:"item_description"`
 		ItemType    string    `json:"item_type"`
@@ -25,7 +26,7 @@ func handleMarket(c echo.Context) error {
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT ml.id, mi.name, mi.description, mi.type, ml.price,
+		SELECT ml.id, mi.id, mi.name, mi.description, mi.type, ml.price,
 		       mi.image_url, ml.refreshed_at, ml.expires_at
 		FROM market_listings ml
 		JOIN market_items mi ON mi.id = ml.item_id
@@ -40,7 +41,7 @@ func handleMarket(c echo.Context) error {
 	listings := []Listing{}
 	for rows.Next() {
 		var l Listing
-		if err := rows.Scan(&l.ID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
+		if err := rows.Scan(&l.ID, &l.ItemID, &l.ItemName, &l.ItemDesc, &l.ItemType, &l.Price,
 			&l.ImageURL, &l.RefreshedAt, &l.ExpiresAt); err != nil {
 			continue
 		}

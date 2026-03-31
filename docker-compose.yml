@@ -3,6 +3,8 @@ services:
     build: .
     container_name: wonka
     restart: unless-stopped
+    labels:
+      - "glance.url=https://iiimabbie-workspace.weii.cloud/?folder=/home/iiimabbie/workspace/wonka"
     ports:
       - "8090:8090"
     environment:
