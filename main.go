@@ -14,6 +14,22 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
+func requestLoggerMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		start := time.Now()
+		err := next(c)
+		duration := time.Since(start)
+		status := c.Response().Status
+		method := c.Request().Method
+		path := c.Request().URL.Path
+		if method == "GET" && path == "/health" {
+			return err
+		}
+		log.Printf("[http] %s %s %d %s", method, path, status, duration.Round(time.Millisecond))
+		return err
+	}
+}
+
 var pool *pgxpool.Pool
 
 // agentAuthMiddleware resolves Bearer token as API key → *Agent
@@ -80,22 +96,22 @@ func adminKeyMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is required")
+		log.Fatal("[startup] DATABASE_URL is required")
 	}
 	if os.Getenv("JWT_SECRET") == "" {
-		log.Fatal("JWT_SECRET is required")
+		log.Fatal("[startup] JWT_SECRET is required")
 	}
 
 	// Run migrations
 	if err := runMigrations(databaseURL); err != nil {
-		log.Fatal("Migration error: ", err)
+		log.Fatal("[startup] migration error: ", err)
 	}
 
 	// Init DB pool
 	var err error
 	pool, err = initDB(databaseURL)
 	if err != nil {
-		log.Fatal("DB init error: ", err)
+		log.Fatal("[startup] db init error: ", err)
 	}
 	defer pool.Close()
 
@@ -103,11 +119,11 @@ func main() {
 	var count int
 	err = pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM settings").Scan(&count)
 	if err != nil {
-		log.Printf("Warning: failed to count settings: %v", err)
+		log.Printf("[startup] failed to count settings: %v", err)
 	}
 
 	if count == 0 {
-		log.Println("🌱 Seeding initial settings from environment variables...")
+		log.Println("[startup] seeding initial settings from environment variables")
 		_, err = pool.Exec(context.Background(),
 			`INSERT INTO settings (ai_base_url, ai_model, ai_api_key) VALUES ($1, $2, $3)`,
 			os.Getenv("WONKA_AI_BASE_URL"),
@@ -115,12 +131,15 @@ func main() {
 			os.Getenv("WONKA_AI_API_KEY"),
 		)
 		if err != nil {
-			log.Printf("Warning: failed to seed initial settings: %v", err)
+			log.Printf("[startup] failed to seed initial settings: %v", err)
 		}
 	}
 
 	e := echo.New()
 	e.HideBanner = true
+
+	// Request logger
+	e.Use(requestLoggerMiddleware)
 
 	// CORS
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
@@ -208,12 +227,12 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("🚨 Daily scheduler panicked: %v", r)
+				log.Printf("[scheduler] daily scheduler panicked: %v", r)
 			}
 		}()
 		loc, err := time.LoadLocation("Asia/Taipei")
 		if err != nil {
-			log.Printf("🚨 Failed to load Asia/Taipei timezone: %v — daily scheduler disabled", err)
+			log.Printf("[scheduler] failed to load Asia/Taipei timezone: %v - daily scheduler disabled", err)
 			return
 		}
 		for {
@@ -231,13 +250,13 @@ func main() {
 				nextRun = next20
 			}
 			wait := time.Until(nextRun)
-			log.Printf("📅 Next daily market refresh scheduled in %v (at %s)", wait.Round(time.Second), nextRun.Format("2006-01-02 15:04:05 MST"))
+			log.Printf("[scheduler] next daily market refresh in %v (at %s)", wait.Round(time.Second), nextRun.Format("2006-01-02 15:04:05 MST"))
 			time.Sleep(wait)
-			log.Println("🔄 Triggering daily market refresh...")
+			log.Println("[scheduler] triggering daily market refresh")
 			if res, err := runMarketRefresh(); err != nil {
-				log.Printf("⚠️ Daily market refresh error: %v", err)
+				log.Printf("[scheduler] daily market refresh error: %v", err)
 			} else {
-				log.Printf("✅ Daily market refresh complete: %d items, ai_fallback=%v", res.Count, res.AIFallback)
+				log.Printf("[scheduler] daily market refresh complete: %d items, ai_fallback=%v", res.Count, res.AIFallback)
 			}
 		}
 	}()
@@ -246,12 +265,12 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("🚨 Hourly scheduler panicked: %v", r)
+				log.Printf("[scheduler] hourly scheduler panicked: %v", r)
 			}
 		}()
 		loc, err := time.LoadLocation("Asia/Taipei")
 		if err != nil {
-			log.Printf("🚨 Failed to load Asia/Taipei timezone: %v — hourly scheduler disabled", err)
+			log.Printf("[scheduler] failed to load Asia/Taipei timezone: %v - hourly scheduler disabled", err)
 			return
 		}
 		for {
@@ -266,26 +285,26 @@ func main() {
 			// Next hour mark
 			nextHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour()+1, 0, 0, 0, loc)
 			wait := time.Until(nextHour)
-			log.Printf("⏰ Next hourly price refresh in %v", wait.Round(time.Second))
+			log.Printf("[scheduler] next hourly price refresh in %v", wait.Round(time.Second))
 			time.Sleep(wait)
 
 			// Re-check daily window after sleep
 			now = time.Now().In(loc)
 			h, m = now.Hour(), now.Minute()
 			if (h == 8 || h == 20) && m < 10 {
-				log.Println("⏭️ Skipping hourly refresh (daily refresh window)")
+				log.Println("[scheduler] skipping hourly refresh (daily refresh window)")
 				continue
 			}
 
-			log.Println("⏱️ Triggering hourly price refresh...")
+			log.Println("[scheduler] triggering hourly price refresh")
 			if res, err := runHourlyPriceRefresh(); err != nil {
-				log.Printf("⚠️ Hourly price refresh error: %v", err)
+				log.Printf("[scheduler] hourly price refresh error: %v", err)
 			} else {
-				log.Printf("✅ Hourly price refresh complete: %d items, fallback=%v", res.Count, res.AIFallback)
+				log.Printf("[scheduler] hourly price refresh complete: %d items, fallback=%v", res.Count, res.AIFallback)
 			}
 		}
 	}()
 
-	log.Println("🍬 Wonka v3 starting on :8090")
+	log.Println("[startup] wonka v3 starting on :8090")
 	e.Logger.Fatal(e.Start(":8090"))
 }

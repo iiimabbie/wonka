@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -34,6 +35,7 @@ func handleMarket(c echo.Context) error {
 		ORDER BY ml.price DESC
 	`)
 	if err != nil {
+		log.Printf("[market] list: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -88,6 +90,7 @@ func handleMarketBuy(c echo.Context) error {
 		`SELECT EXISTS(SELECT 1 FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2)`,
 		agent.ID, r.IdempotencyKey,
 	).Scan(&exists); err != nil {
+		log.Printf("[market] buy: idempotency check error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	if exists {
@@ -111,12 +114,14 @@ func handleMarketBuy(c echo.Context) error {
 	// Transaction: lock agent + check balance + debit + inventory
 	tx, err := pool.Begin(ctx)
 	if err != nil {
+		log.Printf("[market] buy: begin tx error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer tx.Rollback(ctx)
 
 	// Lock agent row to prevent concurrent balance manipulation
 	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, agent.ID); err != nil {
+		log.Printf("[market] buy: lock error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
 	}
 
@@ -125,6 +130,7 @@ func handleMarketBuy(c echo.Context) error {
 	if err := tx.QueryRow(ctx,
 		`SELECT COALESCE(SUM(delta), 0) FROM candy_ledger WHERE agent_id = $1`, agent.ID,
 	).Scan(&balance); err != nil {
+		log.Printf("[market] buy: balance check error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	if balance < price {
@@ -140,6 +146,7 @@ func handleMarketBuy(c echo.Context) error {
 		agent.ID, -price, "market buy: "+itemName, r.IdempotencyKey,
 	)
 	if err != nil {
+		log.Printf("[market] buy: ledger error agent=%s item=%s: %v", agent.Name, itemName, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
@@ -148,12 +155,16 @@ func handleMarketBuy(c echo.Context) error {
 		agent.ID, itemID, price,
 	)
 	if err != nil {
+		log.Printf("[market] buy: inventory error agent=%s item=%s: %v", agent.Name, itemName, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory error"})
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[market] buy: commit error agent=%s item=%s: %v", agent.Name, itemName, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
+
+	log.Printf("[market] buy: agent=%s item=%s price=%d", agent.Name, itemName, price)
 
 	// New balance
 	var newBalance int
@@ -189,6 +200,7 @@ func handleMarketSell(c echo.Context) error {
 		`SELECT EXISTS(SELECT 1 FROM candy_ledger WHERE agent_id = $1 AND idempotency_key = $2)`,
 		agent.ID, r.IdempotencyKey,
 	).Scan(&exists); err != nil {
+		log.Printf("[market] sell: idempotency check error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	if exists {
@@ -198,12 +210,14 @@ func handleMarketSell(c echo.Context) error {
 	// Transaction: lock agent + check ownership + credit + mark sold
 	tx, err := pool.Begin(ctx)
 	if err != nil {
+		log.Printf("[market] sell: begin tx error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer tx.Rollback(ctx)
 
 	// Lock agent row to prevent concurrent sell of same item
 	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, agent.ID); err != nil {
+		log.Printf("[market] sell: lock error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
 	}
 
@@ -247,6 +261,7 @@ func handleMarketSell(c echo.Context) error {
 		agent.ID, sellPrice, "market sell: "+itemName, r.IdempotencyKey,
 	)
 	if err != nil {
+		log.Printf("[market] sell: ledger error agent=%s item=%s: %v", agent.Name, itemName, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
@@ -255,12 +270,16 @@ func handleMarketSell(c echo.Context) error {
 		sellPrice, r.InventoryID,
 	)
 	if err != nil {
+		log.Printf("[market] sell: inventory update error agent=%s item=%s: %v", agent.Name, itemName, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "inventory update error"})
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[market] sell: commit error agent=%s item=%s: %v", agent.Name, itemName, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
+
+	log.Printf("[market] sell: agent=%s item=%s price=%d", agent.Name, itemName, sellPrice)
 
 	var newBalance int
 	pool.QueryRow(ctx,
@@ -289,6 +308,7 @@ func handleInventory(c echo.Context) error {
 		ORDER BY mi.name, inv.acquired_price
 	`, agent.ID)
 	if err != nil {
+		log.Printf("[inventory] list: db error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -404,6 +424,7 @@ func handleInventoryHistory(c echo.Context) error {
 		LIMIT $2 OFFSET $3
 	`, agent.ID, limit, offset)
 	if err != nil {
+		log.Printf("[inventory] history: db error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -444,6 +465,7 @@ func handlePriceHistory(c echo.Context) error {
 			itemID, limit,
 		)
 		if err != nil {
+			log.Printf("[market] prices: db error item=%s: %v", itemID, err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 		}
 		defer rows.Close()
@@ -473,6 +495,7 @@ func handlePriceHistory(c echo.Context) error {
 		limit,
 	)
 	if err != nil {
+		log.Printf("[market] prices: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -504,6 +527,7 @@ func handleMarketEvents(c echo.Context) error {
 		`SELECT description, created_at FROM market_events ORDER BY created_at DESC LIMIT $1`, limit,
 	)
 	if err != nil {
+		log.Printf("[market] events: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()

@@ -19,7 +19,7 @@ func initDB(databaseURL string) (*pgxpool.Pool, error) {
 	if err := pool.Ping(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-	log.Println("✅ Database connected")
+	log.Println("[db] connected")
 	return pool, nil
 }
 
@@ -32,6 +32,6 @@ func runMigrations(databaseURL string) error {
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("migration failed: %w", err)
 	}
-	log.Println("✅ Migrations applied")
+	log.Println("[db] migrations applied")
 	return nil
 }

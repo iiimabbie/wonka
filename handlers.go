@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -31,6 +32,7 @@ func handleRegister(c echo.Context) error {
 
 	hash, err := hashPassword(r.Password)
 	if err != nil {
+		log.Printf("[auth] register: failed to hash password: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
 	}
 
@@ -40,9 +42,11 @@ func handleRegister(c echo.Context) error {
 		r.Email, hash, r.Name,
 	).Scan(&userID)
 	if err != nil {
+		log.Printf("[auth] register: email conflict: %s", r.Email)
 		return c.JSON(http.StatusConflict, map[string]string{"error": "email already exists"})
 	}
 
+	log.Printf("[auth] register: user created id=%s email=%s", userID, r.Email)
 	return c.JSON(http.StatusCreated, map[string]string{"id": userID})
 }
 
@@ -65,11 +69,13 @@ func handleLogin(c echo.Context) error {
 		r.Email,
 	).Scan(&userID, &hash, &role)
 	if err != nil || !checkPassword(hash, r.Password) {
+		log.Printf("[auth] login: invalid credentials for email=%s", r.Email)
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 	}
 
 	token, err := generateJWT(userID, r.Email, role, jwtSecret)
 	if err != nil {
+		log.Printf("[auth] login: failed to generate token: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
 	}
 
@@ -173,6 +179,7 @@ func handleAdjustCandies(c echo.Context) error {
 		agent.ID, r.Delta, r.Reason, r.IdempotencyKey,
 	)
 	if err != nil {
+		log.Printf("[candy] adjust: ledger error agent=%s delta=%d: %v", agent.Name, r.Delta, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 	if res.RowsAffected() == 0 {
@@ -199,6 +206,7 @@ func handleGetHistory(c echo.Context) error {
 		agent.ID,
 	)
 	if err != nil {
+		log.Printf("[candy] history: db error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -250,6 +258,7 @@ func handleGetLeaderboard(c echo.Context) error {
 		LIMIT 100
 	`)
 	if err != nil {
+		log.Printf("[candy] leaderboard: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -336,6 +345,7 @@ func handleTransfer(c echo.Context) error {
 	// Transaction: lock agent + check balance + insert transfer + two ledger entries
 	tx, err := pool.Begin(ctx)
 	if err != nil {
+		log.Printf("[transfer] begin tx error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer tx.Rollback(ctx)
@@ -347,9 +357,11 @@ func handleTransfer(c echo.Context) error {
 		lockID1, lockID2 = lockID2, lockID1
 	}
 	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, lockID1); err != nil {
+		log.Printf("[transfer] lock error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
 	}
 	if _, err := tx.Exec(ctx, `SELECT id FROM agents WHERE id = $1 FOR UPDATE`, lockID2); err != nil {
+		log.Printf("[transfer] lock error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "lock error"})
 	}
 
@@ -379,6 +391,7 @@ func handleTransfer(c echo.Context) error {
 		agent.ID, -r.Amount, "transfer out: "+r.Reason, "out:"+transferID, transferID,
 	)
 	if err != nil {
+		log.Printf("[transfer] ledger debit error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
@@ -388,13 +401,16 @@ func handleTransfer(c echo.Context) error {
 		toID, r.Amount, "transfer in: "+r.Reason, "in:"+transferID, transferID,
 	)
 	if err != nil {
+		log.Printf("[transfer] ledger credit error to=%s: %v", r.To, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "ledger error"})
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		log.Printf("[transfer] commit error agent=%s to=%s: %v", agent.Name, r.To, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "commit error"})
 	}
 
+	log.Printf("[transfer] ok: %s -> %s amount=%d", agent.Name, r.To, r.Amount)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"status":      "ok",
 		"transfer_id": transferID,
@@ -422,6 +438,7 @@ func handleTransferHistory(c echo.Context) error {
 		agent.ID,
 	)
 	if err != nil {
+		log.Printf("[transfer] history: db error agent=%s: %v", agent.Name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -453,6 +470,7 @@ func handleCreateAgent(c echo.Context) error {
 	// Generate API key
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
+		log.Printf("[agent] create: key gen failed: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "key gen failed"})
 	}
 	apiKey := hex.EncodeToString(raw)
@@ -465,9 +483,11 @@ func handleCreateAgent(c echo.Context) error {
 		r.Name, keyHash, user.ID,
 	).Scan(&agentID)
 	if err != nil {
+		log.Printf("[agent] create: name conflict name=%s: %v", r.Name, err)
 		return c.JSON(http.StatusConflict, map[string]string{"error": "agent name already exists"})
 	}
 
+	log.Printf("[agent] created: id=%s name=%s owner=%s", agentID, r.Name, user.Email)
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"id":      agentID,
 		"name":    r.Name,
@@ -492,6 +512,7 @@ func handleListAgents(c echo.Context) error {
 		user.ID,
 	)
 	if err != nil {
+		log.Printf("[agent] list: db error user=%s: %v", user.Email, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -667,6 +688,7 @@ func handleRegenerateKey(c echo.Context) error {
 
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
+		log.Printf("[agent] regenerate-key: key gen failed: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "key gen failed"})
 	}
 	apiKey := hex.EncodeToString(raw)
@@ -678,8 +700,10 @@ func handleRegenerateKey(c echo.Context) error {
 		keyHash, agentID,
 	)
 	if err != nil {
+		log.Printf("[agent] regenerate-key: db error agent=%s: %v", agentID, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 
+	log.Printf("[agent] key regenerated: agent=%s", agentID)
 	return c.JSON(http.StatusOK, map[string]interface{}{"api_key": apiKey})
 }

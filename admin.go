@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -33,6 +34,7 @@ func handleAdminAgents(c echo.Context) error {
 		ORDER BY a.name
 	`)
 	if err != nil {
+		log.Printf("[admin] list agents: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -70,6 +72,7 @@ func handleAdminPatchAgent(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not found"})
 	}
 
+	log.Printf("[admin] patch agent: id=%s name=%s enabled=%v", agentID, name, *r.Enabled)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"id":      agentID,
 		"name":    name,
@@ -96,6 +99,7 @@ func handleAdminUsers(c echo.Context) error {
 		ORDER BY u.email
 	`)
 	if err != nil {
+		log.Printf("[admin] list users: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 	defer rows.Close()
@@ -138,9 +142,11 @@ func handleAdminDeleteUser(c echo.Context) error {
 
 	_, err := pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
+		log.Printf("[admin] delete user: db error user=%s: %v", userID, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
 
+	log.Printf("[admin] deleted user: id=%s unbound_agents=%d", userID, unbound)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"status":          "ok",
 		"deleted_user_id": userID,
@@ -180,8 +186,11 @@ func handleAdminAdjust(c echo.Context) error {
 		agentID, r.Delta, r.Reason, idempotencyKey,
 	)
 	if err != nil {
+		log.Printf("[admin] adjust: ledger error agent=%s delta=%d: %v", agentName, r.Delta, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
+
+	log.Printf("[admin] adjust: agent=%s delta=%d reason=%s", agentName, r.Delta, r.Reason)
 
 	var newBalance int
 	pool.QueryRow(ctx,
@@ -232,8 +241,11 @@ func handleAdminPutSettings(c echo.Context) error {
 		r.AIBaseURL, r.AIModel, r.AIApiKey,
 	)
 	if err != nil {
+		log.Printf("[admin] update settings: db error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "db error"})
 	}
+
+	log.Printf("[admin] settings updated: model=%s base_url=%s", r.AIModel, r.AIBaseURL)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"status":      "ok",

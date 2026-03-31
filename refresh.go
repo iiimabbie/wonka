@@ -76,6 +76,9 @@ func runMarketRefresh() (*refreshResult, error) {
 
 	// AI call outside transaction (slow network I/O)
 	effects, eventDesc, model, aiErr := generateAIPricing(ctx, allItems)
+	if aiErr != nil {
+		log.Printf("[refresh] daily AI pricing failed, using fallback: %v", aiErr)
+	}
 
 	// All DB mutations in a single transaction to prevent partial state
 	tx, err := pool.Begin(ctx)
@@ -148,16 +151,17 @@ func runMarketRefresh() (*refreshResult, error) {
 		res.AIFallback = true
 		res.AIError = aiErr.Error()
 	}
+	log.Printf("[refresh] daily refresh done: %d items, event=%q, ai_model=%s, fallback=%v", res.Count, eventDesc, model, res.AIFallback)
 
 	// After daily refresh: update anchor_price toward 7-day avg
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("🚨 updateAnchorPrices panicked: %v", r)
+				log.Printf("[refresh] updateAnchorPrices panicked: %v", r)
 			}
 		}()
 		if err := updateAnchorPrices(ctx); err != nil {
-			log.Printf("⚠️ Failed to update anchor prices: %v", err)
+			log.Printf("[refresh] failed to update anchor prices: %v", err)
 		}
 	}()
 
@@ -313,7 +317,11 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 	}
 
 	// Has trades: ask AI to adjust prices based on volume (outside transaction)
+	log.Printf("[refresh] hourly refresh: %d total trades, requesting AI pricing", totalTrades)
 	effects, _, aiModel, aiErr := generateHourlyPricing(ctx, volItems, latestEvent)
+	if aiErr != nil {
+		log.Printf("[refresh] hourly AI pricing failed, using fallback: %v", aiErr)
+	}
 
 	// DB mutations in a single transaction
 	tx, err := pool.Begin(ctx)
@@ -372,6 +380,7 @@ func runHourlyPriceRefresh() (*refreshResult, error) {
 		res.AIError = aiErr.Error()
 		_ = aiModel
 	}
+	log.Printf("[refresh] hourly refresh done: %d items, fallback=%v", res.Count, res.AIFallback)
 	return res, nil
 }
 
@@ -459,12 +468,14 @@ func callAI(ctx context.Context, prompt string) (string, string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[ai] request failed: %v", err)
 		return "", "", fmt.Errorf("AI request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
+		log.Printf("[ai] returned status %d: %s", resp.StatusCode, string(respBody))
 		return "", "", fmt.Errorf("AI returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
